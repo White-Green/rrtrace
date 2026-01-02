@@ -5,9 +5,9 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2.178"
-wgpu = "24.0"
-winit = "0.30"
-pollster = "0.4"
-bytemuck = { version = "1.21", features = ["derive"] }
-env_logger = "0.11"
-glam = "0.29" # 行列計算用
+wgpu = "28.0.0"
+winit = "0.30.12"
+pollster = "0.4.0"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+env_logger = "0.11.8"
+glam = "0.30.9" # 行列計算用
