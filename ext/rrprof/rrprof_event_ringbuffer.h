@@ -9,11 +9,11 @@
 typedef struct {
     RRProfTraceEvent buffer[SIZE];
     alignas(64) struct {
-        atomic_ulong write_index;
+        atomic_uint_fast64_t write_index;
         uint64_t read_index_cache;
     } writer;
     alignas(64) struct {
-        atomic_ulong read_index;
+        atomic_uint_fast64_t read_index;
         uint64_t write_index_cache;
     } reader;
 } RRProfEventRingBuffer;

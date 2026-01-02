@@ -1,8 +1,13 @@
 #include "rrprof.h"
 #include "rrprof_event_ringbuffer.h"
 
+#ifdef _WIN32
+#include "process_manager_windows.h"
+#include "shared_memory_windows.h"
+#else
 #include "process_manager_posix.h"
 #include "shared_memory_posix.h"
+#endif
 
 // #define RRPROF_WRITE_DEBUG_LOG
 

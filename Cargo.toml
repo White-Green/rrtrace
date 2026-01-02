@@ -4,10 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-libc = "0.2.178"
 wgpu = "28.0.0"
 winit = "0.30.12"
 pollster = "0.4.0"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 env_logger = "0.11.8"
-glam = "0.30.9" # 行列計算用
+glam = "0.30.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.178"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Diagnostics_Debug"] }

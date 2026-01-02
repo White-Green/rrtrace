@@ -9,6 +9,8 @@ use winit::window::Window;
 
 mod renderer;
 mod ringbuffer;
+#[cfg_attr(unix, path = "shm_unix.rs")]
+#[cfg_attr(windows, path = "shm_windows.rs")]
 mod shm;
 mod visualizer;
 
