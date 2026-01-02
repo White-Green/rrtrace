@@ -1,0 +1,5 @@
+[tools]
+ruby = "4.0.0"
+
+[tasks.build]
+run = "bundle exec rake build"

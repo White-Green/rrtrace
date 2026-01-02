@@ -1,0 +1,4 @@
+module Rrprof
+  VERSION: String
+  def self.visualizer_path: () -> String
+end
