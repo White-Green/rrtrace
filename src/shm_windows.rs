@@ -1,50 +1,43 @@
 use std::ffi::CString;
-use windows_sys::Win32::System::Memory::*;
-use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+use windows_sys::Win32::System::Memory::{
+    FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingA,
+    UnmapViewOfFile,
+};
 
 pub struct SharedMemory {
-    ptr: *mut u8,
+    ptr: MEMORY_MAPPED_VIEW_ADDRESS,
     handle: HANDLE,
 }
 
 impl SharedMemory {
     pub unsafe fn open(name: CString, size: usize) -> SharedMemory {
-        let handle = OpenFileMappingA(
-            FILE_MAP_ALL_ACCESS,
-            0,
-            name.as_ptr() as *const u8,
-        );
-        if handle == 0 {
-            panic!("OpenFileMappingA failed with error {}", unsafe { windows_sys::Win32::System::Diagnostics::Debug::GetLastError() });
+        let handle =
+            unsafe { OpenFileMappingA(FILE_MAP_ALL_ACCESS, 0, name.as_ptr() as *const u8) };
+        if handle.is_null() {
+            panic!("OpenFileMappingA failed with error {}", unsafe {
+                GetLastError()
+            });
         }
 
-        let ptr = MapViewOfFile(
-            handle,
-            FILE_MAP_ALL_ACCESS,
-            0,
-            0,
-            size,
-        );
-        if ptr.is_null() {
-            CloseHandle(handle);
+        let ptr = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size) };
+        if ptr.Value.is_null() {
+            unsafe { CloseHandle(handle) };
             panic!("MapViewOfFile failed");
         }
 
-        SharedMemory {
-            ptr: ptr as *mut u8,
-            handle,
-        }
+        SharedMemory { ptr, handle }
     }
 
     pub fn as_ptr<T>(&self) -> *mut T {
-        self.ptr.cast()
+        self.ptr.Value.cast()
     }
 }
 
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         unsafe {
-            UnmapViewOfFile(self.ptr as *const std::ffi::c_void);
+            UnmapViewOfFile(self.ptr);
             CloseHandle(self.handle);
         }
     }
