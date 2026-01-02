@@ -12,14 +12,16 @@ impl SharedMemory {
         if fd < 0 {
             panic!("shm_open failed");
         }
-        let memory = unsafe { libc::mmap(
-            std::ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            fd,
-            0,
-        ) };
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
         if memory == libc::MAP_FAILED {
             panic!("mmap failed");
         }

@@ -48,7 +48,8 @@ impl RRProfEventRingBuffer {
 
             let first_part_len = (&(*this).buffer)[read_index as usize & MASK..].len();
             if read_len <= first_part_len {
-                buffer.copy_from_slice(&(&(*this).buffer)[read_index as usize & MASK..][..read_len]);
+                buffer
+                    .copy_from_slice(&(&(*this).buffer)[read_index as usize & MASK..][..read_len]);
             } else {
                 buffer[..first_part_len]
                     .copy_from_slice(&(&(*this).buffer)[read_index as usize & MASK..]);
@@ -56,7 +57,8 @@ impl RRProfEventRingBuffer {
                     .copy_from_slice(&(&(*this).buffer)[0..read_len - first_part_len]);
             }
 
-            (*this).reader
+            (*this)
+                .reader
                 .read_index
                 .store(read_index + read_len as u64, atomic::Ordering::Release);
             read_len

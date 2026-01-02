@@ -1,6 +1,6 @@
+use crate::ringbuffer::RRProfTraceEvent;
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
-use crate::ringbuffer::RRProfTraceEvent;
 
 const EVENT_TYPE_MASK: u64 = 0xF000000000000000;
 const EVENT_TYPE_CALL: u64 = 0x0000000000000000;
@@ -95,7 +95,10 @@ impl TraceState {
 
         match event_type {
             EVENT_TYPE_CALL => {
-                let stack = self.thread_stacks.entry(self.current_thread_id).or_default();
+                let stack = self
+                    .thread_stacks
+                    .entry(self.current_thread_id)
+                    .or_default();
                 stack.push(CallInfo {
                     start_time: rel_time,
                     method_id: event.data,
@@ -109,10 +112,15 @@ impl TraceState {
                     }
                 }
             }
-            EVENT_TYPE_THREAD_START | EVENT_TYPE_THREAD_READY | EVENT_TYPE_THREAD_SUSPENDED | EVENT_TYPE_THREAD_RESUME | EVENT_TYPE_THREAD_EXIT => {
+            EVENT_TYPE_THREAD_START
+            | EVENT_TYPE_THREAD_READY
+            | EVENT_TYPE_THREAD_SUSPENDED
+            | EVENT_TYPE_THREAD_RESUME
+            | EVENT_TYPE_THREAD_EXIT => {
                 self.current_thread_id = event.data as u32;
                 if !self.thread_to_lane.contains_key(&self.current_thread_id) {
-                    self.thread_to_lane.insert(self.current_thread_id, self.next_lane);
+                    self.thread_to_lane
+                        .insert(self.current_thread_id, self.next_lane);
                     self.next_lane += 1;
                 }
             }
@@ -126,7 +134,9 @@ impl TraceState {
         let end_x = end_time as f32 / 1_000_000.0;
         let duration = end_x - start_x;
 
-        if duration < 0.01 { return; } // 小さすぎるものはスキップ
+        if duration < 0.01 {
+            return;
+        } // 小さすぎるものはスキップ
 
         let color = self.method_id_to_color(call.method_id);
 

@@ -1,19 +1,16 @@
 use crate::ringbuffer::{EventRingBuffer, RRProfTraceEvent};
-use std::env;
 use std::ffi::CString;
-use std::mem;
 use std::sync::Arc;
-use winit::{
-    application::ApplicationHandler,
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::Window,
-};
+use std::{env, mem};
+use winit::application::ApplicationHandler;
+use winit::event::*;
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::window::Window;
 
+mod renderer;
 mod ringbuffer;
 mod shm;
 mod visualizer;
-mod renderer;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -37,7 +34,11 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("rrprof visualizer")).unwrap());
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("rrprof visualizer"))
+                .unwrap(),
+        );
         self.window = Some(window.clone());
 
         let renderer = pollster::block_on(renderer::Renderer::new(window));
