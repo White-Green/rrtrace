@@ -16,23 +16,21 @@ mod visualizer;
 mod renderer;
 
 struct App {
-    shm_name: String,
     window: Option<Arc<Window>>,
     renderer: Option<renderer::Renderer>,
     trace_state: visualizer::TraceState,
-    ringbuffer: Option<EventRingBuffer>,
-    event_buf: [RRProfTraceEvent; 1024],
+    ringbuffer: EventRingBuffer,
+    event_buf: Vec<RRProfTraceEvent>,
 }
 
 impl App {
-    fn new(shm_name: String) -> Self {
+    fn new(ringbuffer: EventRingBuffer) -> Self {
         Self {
-            shm_name,
             window: None,
             renderer: None,
             trace_state: visualizer::TraceState::new(),
-            ringbuffer: None,
-            event_buf: [RRProfTraceEvent::default(); 1024],
+            ringbuffer,
+            event_buf: vec![RRProfTraceEvent::default(); 65536],
         }
     }
 }
@@ -41,14 +39,6 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("rrprof visualizer")).unwrap());
         self.window = Some(window.clone());
-
-        let shm = unsafe {
-            shm::SharedMemory::open(
-                CString::new(self.shm_name.clone()).unwrap(),
-                mem::size_of::<ringbuffer::RRProfEventRingBuffer>(),
-            )
-        };
-        self.ringbuffer = Some(unsafe { EventRingBuffer::new(shm.as_ptr(), move || drop(shm)) });
 
         let renderer = pollster::block_on(renderer::Renderer::new(window));
         self.renderer = Some(renderer);
@@ -91,15 +81,13 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        if let Some(ringbuffer) = &mut self.ringbuffer {
-            let count = ringbuffer.read(&mut self.event_buf);
-            if count > 0 {
-                for i in 0..count {
-                    self.trace_state.process_event(&self.event_buf[i]);
-                }
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+        let count = self.ringbuffer.read(&mut self.event_buf);
+        if count > 0 {
+            for i in 0..count {
+                self.trace_state.process_event(&self.event_buf[i]);
+            }
+            if let Some(window) = &self.window {
+                window.request_redraw();
             }
         }
     }
@@ -110,8 +98,16 @@ fn main() {
     assert_eq!(env::args().len(), 2, "Usage: rrprof <shm_name>");
     let shm_name = env::args().nth(1).unwrap();
 
+    let shm = unsafe {
+        shm::SharedMemory::open(
+            CString::new(shm_name).unwrap(),
+            mem::size_of::<ringbuffer::RRProfEventRingBuffer>(),
+        )
+    };
+    let ringbuffer = unsafe { EventRingBuffer::new(shm.as_ptr(), move || drop(shm)) };
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(shm_name);
+    let mut app = App::new(ringbuffer);
     event_loop.run_app(&mut app).unwrap();
 }
