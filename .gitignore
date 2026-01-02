@@ -17,3 +17,4 @@
 !/rrprof.gemspec
 
 *.so
+*.bundle
