@@ -86,9 +86,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         let count = self.ringbuffer.read(&mut self.event_buf);
         if count > 0 {
-            for i in 0..count {
-                self.trace_state.process_event(&self.event_buf[i]);
-            }
+            self.trace_state.process_events(&self.event_buf[..count]);
             if let Some(window) = &self.window {
                 window.request_redraw();
             }

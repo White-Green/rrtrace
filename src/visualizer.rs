@@ -84,47 +84,49 @@ impl TraceState {
         }
     }
 
-    pub fn process_event(&mut self, event: &RRProfTraceEvent) {
-        let timestamp = event.timestamp_and_event_type & !EVENT_TYPE_MASK;
-        let event_type = event.timestamp_and_event_type & EVENT_TYPE_MASK;
+    pub fn process_events(&mut self, events: &[RRProfTraceEvent]) {
+        for event in events {
+            let timestamp = event.timestamp_and_event_type & !EVENT_TYPE_MASK;
+            let event_type = event.timestamp_and_event_type & EVENT_TYPE_MASK;
 
-        if self.base_time.is_none() {
-            self.base_time = Some(timestamp);
-        }
-        let rel_time = timestamp - self.base_time.unwrap();
-
-        match event_type {
-            EVENT_TYPE_CALL => {
-                let stack = self
-                    .thread_stacks
-                    .entry(self.current_thread_id)
-                    .or_default();
-                stack.push(CallInfo {
-                    start_time: rel_time,
-                    method_id: event.data,
-                    stack_depth: stack.len() as u32,
-                });
+            if self.base_time.is_none() {
+                self.base_time = Some(timestamp);
             }
-            EVENT_TYPE_RETURN => {
-                if let Some(stack) = self.thread_stacks.get_mut(&self.current_thread_id) {
-                    if let Some(call) = stack.pop() {
-                        self.add_instance(call, rel_time, self.current_thread_id);
+            let rel_time = timestamp - self.base_time.unwrap();
+
+            match event_type {
+                EVENT_TYPE_CALL => {
+                    let stack = self
+                        .thread_stacks
+                        .entry(self.current_thread_id)
+                        .or_default();
+                    stack.push(CallInfo {
+                        start_time: rel_time,
+                        method_id: event.data,
+                        stack_depth: stack.len() as u32,
+                    });
+                }
+                EVENT_TYPE_RETURN => {
+                    if let Some(stack) = self.thread_stacks.get_mut(&self.current_thread_id) {
+                        if let Some(call) = stack.pop() {
+                            self.add_instance(call, rel_time, self.current_thread_id);
+                        }
                     }
                 }
-            }
-            EVENT_TYPE_THREAD_START
-            | EVENT_TYPE_THREAD_READY
-            | EVENT_TYPE_THREAD_SUSPENDED
-            | EVENT_TYPE_THREAD_RESUME
-            | EVENT_TYPE_THREAD_EXIT => {
-                self.current_thread_id = event.data as u32;
-                if !self.thread_to_lane.contains_key(&self.current_thread_id) {
-                    self.thread_to_lane
-                        .insert(self.current_thread_id, self.next_lane);
-                    self.next_lane += 1;
+                EVENT_TYPE_THREAD_START
+                | EVENT_TYPE_THREAD_READY
+                | EVENT_TYPE_THREAD_SUSPENDED
+                | EVENT_TYPE_THREAD_RESUME
+                | EVENT_TYPE_THREAD_EXIT => {
+                    self.current_thread_id = event.data as u32;
+                    if !self.thread_to_lane.contains_key(&self.current_thread_id) {
+                        self.thread_to_lane
+                            .insert(self.current_thread_id, self.next_lane);
+                        self.next_lane += 1;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
