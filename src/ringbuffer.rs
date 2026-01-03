@@ -3,8 +3,48 @@ use std::sync::atomic::{self, AtomicU64};
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct RRProfTraceEvent {
-    pub timestamp_and_event_type: u64,
-    pub data: u64,
+    timestamp_and_event_type: u64,
+    data: u64,
+}
+
+const EVENT_TYPE_MASK: u64 = 0xF000000000000000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RRProfTraceEventType {
+    Call,
+    Return,
+    GCStart,
+    GCEnd,
+    ThreadStart,
+    ThreadReady,
+    ThreadSuspended,
+    ThreadResume,
+    ThreadExit,
+}
+
+impl RRProfTraceEvent {
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp_and_event_type & !EVENT_TYPE_MASK
+    }
+
+    pub fn event_type(&self) -> RRProfTraceEventType {
+        match self.timestamp_and_event_type & EVENT_TYPE_MASK {
+            0x0000000000000000 => RRProfTraceEventType::Call,
+            0x1000000000000000 => RRProfTraceEventType::Return,
+            0x2000000000000000 => RRProfTraceEventType::GCStart,
+            0x3000000000000000 => RRProfTraceEventType::GCEnd,
+            0x4000000000000000 => RRProfTraceEventType::ThreadStart,
+            0x5000000000000000 => RRProfTraceEventType::ThreadReady,
+            0x6000000000000000 => RRProfTraceEventType::ThreadSuspended,
+            0x7000000000000000 => RRProfTraceEventType::ThreadResume,
+            0x8000000000000000 => RRProfTraceEventType::ThreadExit,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn data(&self) -> u64 {
+        self.data
+    }
 }
 
 pub const SIZE: usize = 65_536;
