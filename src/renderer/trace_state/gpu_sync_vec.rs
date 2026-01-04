@@ -77,6 +77,13 @@ impl<T> GpuSyncVec<T> {
         self.dirty_range.end = self.dirty_range.end.max(updated_index + 1);
     }
 
+    pub fn truncate(&mut self, len: usize) {
+        if len < self.data.len() {
+            self.data.truncate(len);
+            self.dirty_range.end = self.dirty_range.end.min(len);
+        }
+    }
+
     pub fn sync(&mut self)
     where
         T: NoUninit,
