@@ -2,7 +2,7 @@ use crate::ringbuffer::{RRProfTraceEvent, RRProfTraceEventType};
 use gpu_sync_vec::GpuSyncVec;
 use std::cmp::Reverse;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::{fmt, iter, mem};
 use wgpu::{Buffer, BufferUsages, Device, Queue};
@@ -35,6 +35,7 @@ struct ThreadStack {
     vertices: GpuSyncVec<CallBox>,
     ready_for_free_slot: VecDeque<(usize, u64)>,
     free_slot: BinaryHeap<Reverse<usize>>,
+    used_slot: BTreeSet<usize>,
     visible_call_depth: MultiSet<u32>,
     free_depth: VecDeque<(u32, u64)>,
 }
@@ -48,6 +49,7 @@ impl ThreadStack {
             vertices: GpuSyncVec::new(device, queue, VERTEX_BUFFER_USAGE),
             ready_for_free_slot: VecDeque::new(),
             free_slot: BinaryHeap::new(),
+            used_slot: Default::default(),
             visible_call_depth: MultiSet::new(),
             free_depth: VecDeque::new(),
         }
@@ -59,6 +61,7 @@ impl ThreadStack {
         {
             self.ready_for_free_slot.pop_front();
             self.free_slot.push(Reverse(index));
+            self.used_slot.remove(&index);
         }
     }
 
@@ -83,6 +86,7 @@ impl ThreadStack {
             vertex_index: index,
             method_id: enter_method_id,
         });
+        self.used_slot.insert(index);
         self.visible_call_depth.insert(depth);
     }
 
@@ -143,10 +147,13 @@ impl ThreadStack {
                 index
             };
             *vertex_index = index;
+            self.used_slot.insert(index);
         }
     }
 
     fn sync(&mut self, now: u64) {
+        let required_len = self.used_slot.last().map_or(0, |&last| last + 1);
+        self.vertices.truncate(required_len);
         self.vertices.sync();
         while let Some(&(depth, exit_at)) = self.free_depth.front()
             && exit_at + VISIBLE_DURATION < now
