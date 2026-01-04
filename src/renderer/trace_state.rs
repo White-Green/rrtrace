@@ -1,7 +1,8 @@
 use crate::ringbuffer::{RRProfTraceEvent, RRProfTraceEventType};
 use gpu_sync_vec::GpuSyncVec;
+use std::cmp::Reverse;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::{fmt, iter, mem};
 use wgpu::{Buffer, BufferUsages, Device, Queue};
@@ -32,7 +33,8 @@ struct CallStackEntry {
 struct ThreadStack {
     call_stack: Vec<CallStackEntry>,
     vertices: GpuSyncVec<CallBox>,
-    free_slot: VecDeque<(usize, u64)>,
+    ready_for_free_slot: VecDeque<(usize, u64)>,
+    free_slot: BinaryHeap<Reverse<usize>>,
     visible_call_depth: MultiSet<u32>,
     free_depth: VecDeque<(u32, u64)>,
 }
@@ -44,13 +46,24 @@ impl ThreadStack {
         ThreadStack {
             call_stack: Vec::new(),
             vertices: GpuSyncVec::new(device, queue, VERTEX_BUFFER_USAGE),
-            free_slot: VecDeque::new(),
+            ready_for_free_slot: VecDeque::new(),
+            free_slot: BinaryHeap::new(),
             visible_call_depth: MultiSet::new(),
             free_depth: VecDeque::new(),
         }
     }
 
+    fn sync_free_slot(&mut self, at: u64) {
+        while let Some(&(index, exit_at)) = self.ready_for_free_slot.front()
+            && exit_at + VISIBLE_DURATION < at
+        {
+            self.ready_for_free_slot.pop_front();
+            self.free_slot.push(Reverse(index));
+        }
+    }
+
     fn enter(&mut self, at: u64, enter_method_id: u64) {
+        self.sync_free_slot(at);
         let depth = self.call_stack.len() as u32;
         let vertex = CallBox {
             start_time: encode_time(at),
@@ -58,10 +71,7 @@ impl ThreadStack {
             depth,
             method_id: enter_method_id as u32,
         };
-        let index = if let Some(&(index, exit_at)) = self.free_slot.front()
-            && exit_at + VISIBLE_DURATION < at
-        {
-            self.free_slot.pop_front();
+        let index = if let Some(Reverse(index)) = self.free_slot.pop() {
             self.vertices[index] = vertex;
             index
         } else {
@@ -86,7 +96,7 @@ impl ThreadStack {
             self.free_depth.push_back((depth, at));
             if vertex_index != usize::MAX {
                 self.vertices[vertex_index].end_time = encode_time(at);
-                self.free_slot.push_back((vertex_index, at));
+                self.ready_for_free_slot.push_back((vertex_index, at));
             }
             if exit_method_id == method_id {
                 break;
@@ -101,11 +111,12 @@ impl ThreadStack {
         for CallStackEntry { vertex_index, .. } in self.call_stack.iter_mut() {
             let index = mem::replace(vertex_index, usize::MAX);
             self.vertices[index].end_time = encode_time(at);
-            self.free_slot.push_back((index, at));
+            self.ready_for_free_slot.push_back((index, at));
         }
     }
 
     fn resume_all(&mut self, at: u64) {
+        self.sync_free_slot(at);
         for depth in 0..self.call_stack.len() as u32 {
             self.visible_call_depth.insert(depth);
         }
@@ -123,10 +134,7 @@ impl ThreadStack {
                 method_id: method_id as u32,
                 depth: depth as u32,
             };
-            let index = if let Some(&(index, exit_at)) = self.free_slot.front()
-                && exit_at + VISIBLE_DURATION < at
-            {
-                self.free_slot.pop_front();
+            let index = if let Some(Reverse(index)) = self.free_slot.pop() {
                 self.vertices[index] = vertex;
                 index
             } else {
