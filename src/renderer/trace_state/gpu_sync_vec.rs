@@ -2,7 +2,7 @@ use bytemuck::NoUninit;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Index, IndexMut, Range};
-use wgpu::{Buffer, BufferAddress, BufferDescriptor, BufferUsages, BufferView, Device, Queue};
+use wgpu::{Buffer, BufferAddress, BufferDescriptor, BufferUsages, Device, Queue};
 
 pub struct GpuSyncVec<T> {
     data: Vec<T>,
@@ -93,6 +93,7 @@ impl<T> GpuSyncVec<T> {
                 usage: self.gpu_buffer.usage(),
                 mapped_at_creation: false,
             });
+            self.dirty_range = 0..self.data.len();
         }
 
         let dirty_data = &self.data[self.dirty_range.clone()];

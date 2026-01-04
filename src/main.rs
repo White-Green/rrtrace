@@ -12,22 +12,20 @@ mod ringbuffer;
 #[cfg_attr(unix, path = "shm_unix.rs")]
 #[cfg_attr(windows, path = "shm_windows.rs")]
 mod shm;
-mod visualizer;
 
 struct App {
     window: Option<Arc<Window>>,
-    renderer: Option<renderer::Renderer>,
-    trace_state: visualizer::TraceState,
+    renderer: renderer::Renderer,
     ringbuffer: EventRingBuffer,
     event_buf: Vec<RRProfTraceEvent>,
 }
 
 impl App {
     fn new(ringbuffer: EventRingBuffer) -> Self {
+        let renderer = pollster::block_on(renderer::Renderer::new());
         Self {
             window: None,
-            renderer: None,
-            trace_state: visualizer::TraceState::new(),
+            renderer,
             ringbuffer,
             event_buf: vec![RRProfTraceEvent::default(); 65536],
         }
@@ -41,10 +39,8 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title("rrprof visualizer"))
                 .unwrap(),
         );
-        self.window = Some(window.clone());
-
-        let renderer = pollster::block_on(renderer::Renderer::new(window));
-        self.renderer = Some(renderer);
+        self.renderer.set_window(window.clone());
+        self.window = Some(window);
     }
 
     fn window_event(
@@ -53,8 +49,9 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let window = self.window.as_ref().unwrap();
-        let renderer = self.renderer.as_mut().unwrap();
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
 
         match event {
             WindowEvent::CloseRequested
@@ -68,13 +65,12 @@ impl ApplicationHandler for App {
                 ..
             } => event_loop.exit(),
             WindowEvent::Resized(physical_size) => {
-                renderer.resize(physical_size);
+                self.renderer.resize(physical_size);
             }
             WindowEvent::RedrawRequested => {
-                renderer.update(&self.trace_state);
-                match renderer.render() {
+                match self.renderer.render() {
                     Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => renderer.resize(window.inner_size()),
+                    Err(wgpu::SurfaceError::Lost) => self.renderer.resize(window.inner_size()),
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     Err(e) => eprintln!("{:?}", e),
                 }
@@ -86,7 +82,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         let count = self.ringbuffer.read(&mut self.event_buf);
         if count > 0 {
-            self.trace_state.process_events(&self.event_buf[..count]);
+            self.renderer.process_events(&self.event_buf[..count]);
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
@@ -95,7 +91,6 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    env_logger::init();
     assert_eq!(env::args().len(), 2, "Usage: rrprof <shm_name>");
     let shm_name = env::args().nth(1).unwrap();
 

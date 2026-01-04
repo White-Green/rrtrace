@@ -1,18 +1,27 @@
 use crate::ringbuffer::{RRProfTraceEvent, RRProfTraceEventType};
 use gpu_sync_vec::GpuSyncVec;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
-use std::mem;
+use std::fmt::{Debug, Formatter};
+use std::{fmt, iter, mem};
 use wgpu::{Buffer, BufferUsages, Device, Queue};
 
 mod gpu_sync_vec;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GpuBox {
-    start_time: u64,
-    end_time: u64,
-    method_id: u64,
-    depth: u64,
+pub struct CallBox {
+    start_time: [u32; 2],
+    end_time: [u32; 2],
+    method_id: u32,
+    depth: u32,
+}
+
+fn encode_time(time: u64) -> [u32; 2] {
+    [
+        (time & 0x7fffffff) as u32,
+        ((time >> 31) & 0xffffffff) as u32,
+    ]
 }
 
 struct CallStackEntry {
@@ -22,8 +31,10 @@ struct CallStackEntry {
 
 struct ThreadStack {
     call_stack: Vec<CallStackEntry>,
-    vertices: GpuSyncVec<GpuBox>,
-    free_slot: VecDeque<usize>,
+    vertices: GpuSyncVec<CallBox>,
+    free_slot: VecDeque<(usize, u64)>,
+    visible_call_depth: MultiSet<u32>,
+    free_depth: VecDeque<(u32, u64)>,
 }
 
 impl ThreadStack {
@@ -34,6 +45,106 @@ impl ThreadStack {
             call_stack: Vec::new(),
             vertices: GpuSyncVec::new(device, queue, VERTEX_BUFFER_USAGE),
             free_slot: VecDeque::new(),
+            visible_call_depth: MultiSet::new(),
+            free_depth: VecDeque::new(),
+        }
+    }
+
+    fn enter(&mut self, at: u64, enter_method_id: u64) {
+        let depth = self.call_stack.len() as u32;
+        let vertex = CallBox {
+            start_time: encode_time(at),
+            end_time: encode_time(u64::MAX),
+            depth,
+            method_id: enter_method_id as u32,
+        };
+        let index = if let Some(&(index, exit_at)) = self.free_slot.front()
+            && exit_at + VISIBLE_DURATION < at
+        {
+            self.free_slot.pop_front();
+            self.vertices[index] = vertex;
+            index
+        } else {
+            let index = self.vertices.len();
+            self.vertices.push(vertex);
+            index
+        };
+        self.call_stack.push(CallStackEntry {
+            vertex_index: index,
+            method_id: enter_method_id,
+        });
+        self.visible_call_depth.insert(depth);
+    }
+
+    fn exit(&mut self, at: u64, exit_method_id: u64) {
+        while let Some(entry) = self.call_stack.pop() {
+            let CallStackEntry {
+                vertex_index,
+                method_id,
+            } = entry;
+            let depth = self.call_stack.len() as u32;
+            self.free_depth.push_back((depth, at));
+            if vertex_index != usize::MAX {
+                self.vertices[vertex_index].end_time = encode_time(at);
+                self.free_slot.push_back((vertex_index, at));
+            }
+            if exit_method_id == method_id {
+                break;
+            }
+        }
+    }
+
+    fn cut_all(&mut self, at: u64) {
+        for depth in 0..self.call_stack.len() as u32 {
+            self.free_depth.push_back((depth, at));
+        }
+        for CallStackEntry { vertex_index, .. } in self.call_stack.iter_mut() {
+            let index = mem::replace(vertex_index, usize::MAX);
+            self.vertices[index].end_time = encode_time(at);
+            self.free_slot.push_back((index, at));
+        }
+    }
+
+    fn resume_all(&mut self, at: u64) {
+        for depth in 0..self.call_stack.len() as u32 {
+            self.visible_call_depth.insert(depth);
+        }
+        for (
+            depth,
+            &mut CallStackEntry {
+                ref mut vertex_index,
+                method_id,
+            },
+        ) in self.call_stack.iter_mut().enumerate()
+        {
+            let vertex = CallBox {
+                start_time: encode_time(at),
+                end_time: encode_time(u64::MAX),
+                method_id: method_id as u32,
+                depth: depth as u32,
+            };
+            let index = if let Some(&(index, exit_at)) = self.free_slot.front()
+                && exit_at + VISIBLE_DURATION < at
+            {
+                self.free_slot.pop_front();
+                self.vertices[index] = vertex;
+                index
+            } else {
+                let index = self.vertices.len();
+                self.vertices.push(vertex);
+                index
+            };
+            *vertex_index = index;
+        }
+    }
+
+    fn sync(&mut self, now: u64) {
+        self.vertices.sync();
+        while let Some(&(depth, exit_at)) = self.free_depth.front()
+            && exit_at + VISIBLE_DURATION < now
+        {
+            self.free_depth.pop_front();
+            self.visible_call_depth.remove(depth);
         }
     }
 }
@@ -61,6 +172,14 @@ impl TraceState {
         }
     }
 
+    pub fn base_time(&self) -> [u32; 2] {
+        encode_time(self.base_time)
+    }
+
+    pub fn num_threads(&self) -> u32 {
+        self.thread_stacks.len() as u32
+    }
+
     pub fn process_events(&mut self, events: &[RRProfTraceEvent]) {
         macro_rules! thread_data {
             ($tid:expr) => {
@@ -78,124 +197,33 @@ impl TraceState {
                 RRProfTraceEventType::Call => {
                     let tid = self.last_thread_id;
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    let vertex = GpuBox {
-                        start_time: timestamp,
-                        end_time: u64::MAX,
-                        depth: stack.call_stack.len() as u64,
-                        method_id: event.data(),
-                    };
-                    let index = if let Some(&index) = stack.free_slot.front()
-                        && stack.vertices[index].end_time < VISIBLE_DURATION
-                    {
-                        stack.free_slot.pop_front();
-                        stack.vertices[index] = vertex;
-                        index
-                    } else {
-                        let index = stack.vertices.len();
-                        stack.vertices.push(vertex);
-                        index
-                    };
-                    stack.call_stack.push(CallStackEntry {
-                        vertex_index: index,
-                        method_id: event.data(),
-                    });
+                    stack.enter(timestamp, event.data());
                 }
                 RRProfTraceEventType::Return => {
                     let tid = self.last_thread_id;
-                    let event_method_id = event.data();
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    while let Some(entry) = stack.call_stack.pop() {
-                        let CallStackEntry {
-                            vertex_index,
-                            method_id,
-                        } = entry;
-                        stack.vertices[vertex_index].end_time = timestamp;
-                        stack.free_slot.push_back(vertex_index);
-                        if event_method_id == method_id {
-                            break;
-                        }
-                    }
+                    stack.exit(timestamp, event.data());
                 }
                 RRProfTraceEventType::GCStart => {
                     let tid = self.last_thread_id;
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    for CallStackEntry { vertex_index, .. } in stack.call_stack.iter_mut() {
-                        let index = mem::replace(vertex_index, usize::MAX);
-                        stack.vertices[index].end_time = timestamp;
-                        stack.free_slot.push_back(index);
-                    }
+                    stack.cut_all(timestamp);
                 }
                 RRProfTraceEventType::GCEnd => {
                     let tid = self.last_thread_id;
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    for (
-                        depth,
-                        &mut CallStackEntry {
-                            ref mut vertex_index,
-                            method_id,
-                        },
-                    ) in stack.call_stack.iter_mut().enumerate()
-                    {
-                        let vertex = GpuBox {
-                            start_time: timestamp,
-                            end_time: u64::MAX,
-                            method_id,
-                            depth: depth as u64,
-                        };
-                        let index = if let Some(&index) = stack.free_slot.front()
-                            && stack.vertices[index].end_time < VISIBLE_DURATION
-                        {
-                            stack.free_slot.pop_front();
-                            stack.vertices[index] = vertex;
-                            index
-                        } else {
-                            let index = stack.vertices.len();
-                            stack.vertices.push(vertex);
-                            index
-                        };
-                        *vertex_index = index;
-                    }
+                    stack.resume_all(timestamp);
                 }
                 RRProfTraceEventType::ThreadSuspended => {
                     let tid = event.data() as u32;
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    for CallStackEntry { vertex_index, .. } in stack.call_stack.iter_mut() {
-                        let index = mem::replace(vertex_index, usize::MAX);
-                        stack.vertices[index].end_time = timestamp;
-                        stack.free_slot.push_back(index);
-                    }
+                    stack.cut_all(timestamp);
                 }
                 RRProfTraceEventType::ThreadResume => {
                     let tid = event.data() as u32;
                     self.last_thread_id = tid;
                     let stack: &mut ThreadStack = thread_data!(tid);
-                    for (
-                        depth,
-                        &mut CallStackEntry {
-                            ref mut vertex_index,
-                            method_id,
-                        },
-                    ) in stack.call_stack.iter_mut().enumerate()
-                    {
-                        let vertex = GpuBox {
-                            start_time: timestamp,
-                            end_time: u64::MAX,
-                            method_id,
-                            depth: depth as u64,
-                        };
-                        let index = if let Some(&index) = stack.free_slot.front()
-                            && stack.vertices[index].end_time < VISIBLE_DURATION
-                        {
-                            stack.free_slot.pop_front();
-                            stack.vertices[index] = vertex;
-                            index
-                        } else {
-                            let index = stack.vertices.len();
-                            stack.vertices.push(vertex);
-                            index
-                        };
-                        *vertex_index = index;
-                    }
+                    stack.resume_all(timestamp);
                 }
                 RRProfTraceEventType::ThreadExit => {
                     let tid = event.data() as u32;
@@ -206,17 +234,86 @@ impl TraceState {
         }
     }
 
-    pub fn read_vertices(&mut self, mut f: impl FnMut(usize, &Buffer, usize)) {
+    pub fn max_depth(&mut self) -> u32 {
+        self.thread_stacks
+            .values_mut()
+            .filter_map(|stack| stack.visible_call_depth.max().copied())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn sync(&mut self) {
         while let Some(&(tid, exited_at)) = self.exited_threads.front() {
-            if exited_at + VISIBLE_DURATION >= self.base_time {
+            if self.base_time <= exited_at + VISIBLE_DURATION {
                 break;
             }
             self.exited_threads.pop_front();
             self.thread_stacks.remove(&tid);
         }
+        self.thread_stacks
+            .values_mut()
+            .for_each(|stack| stack.sync(self.base_time));
+    }
+
+    pub fn read_vertices(&mut self, mut f: impl FnMut(usize, &Buffer, usize)) {
         for (i, stack) in self.thread_stacks.values_mut().enumerate() {
-            stack.vertices.sync();
+            stack.sync(self.base_time);
             f(i, stack.vertices.buffer(), stack.vertices.len());
         }
+    }
+}
+
+struct MultiSet<T> {
+    inner: BTreeMap<T, usize>,
+}
+
+impl<T> Default for MultiSet<T> {
+    fn default() -> Self {
+        MultiSet::new()
+    }
+}
+
+impl<T> Debug for MultiSet<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_set()
+            .entries(self.inner.iter().flat_map(|(k, &v)| iter::repeat_n(k, v)))
+            .finish()
+    }
+}
+
+impl<T> MultiSet<T> {
+    fn new() -> MultiSet<T> {
+        MultiSet {
+            inner: BTreeMap::new(),
+        }
+    }
+}
+impl<T> MultiSet<T>
+where
+    T: Ord,
+{
+    fn insert(&mut self, value: T) {
+        *self.inner.entry(value).or_default() += 1;
+    }
+
+    fn remove(&mut self, value: T) {
+        match self.inner.entry(value) {
+            Entry::Vacant(_) => return,
+            Entry::Occupied(mut entry) => {
+                let count = entry.get_mut();
+                if *count <= 1 {
+                    entry.remove();
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+    }
+
+    fn max(&self) -> Option<&T> {
+        self.inner.last_key_value().map(|(v, _)| v)
     }
 }

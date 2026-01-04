@@ -28,11 +28,11 @@ static inline uint64_t now(void) {
     uint64_t timestamp = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 
     static atomic_uint_fast64_t base_timestamp = 0;
-    uint64_t base = atomic_compare_exchange_strong_explicit(&base_timestamp, &(uint64_t){0}, timestamp, memory_order_relaxed, memory_order_relaxed);
-    if (base == 0) {
+    uint64_t expected = 0;
+    if (atomic_compare_exchange_strong_explicit(&base_timestamp, &expected, timestamp, memory_order_relaxed, memory_order_relaxed)) {
         return 0;
     } else {
-        return timestamp - base;
+        return timestamp - expected;
     }
 }
 
