@@ -74,8 +74,10 @@ impl ThreadStack {
             depth,
             method_id: enter_method_id as u32,
         };
-        let index = if let Some(Reverse(index)) = self.free_slot.pop() {
-            self.vertices[index] = vertex;
+        let index = if let Some(Reverse(index)) = self.free_slot.pop()
+            && let Some(vertex_slot) = self.vertices.get_mut(index)
+        {
+            *vertex_slot = vertex;
             index
         } else {
             let index = self.vertices.len();
@@ -138,8 +140,9 @@ impl ThreadStack {
                 method_id: method_id as u32,
                 depth: depth as u32,
             };
-            let index = if let Some(Reverse(index)) = self.free_slot.pop() {
-                self.vertices[index] = vertex;
+            let index = if let Some(Reverse(index)) = self.free_slot.pop()
+                && let Some(vertex_slot) = self.vertices.get_mut(index) {
+                *vertex_slot = vertex;
                 index
             } else {
                 let index = self.vertices.len();
@@ -273,7 +276,9 @@ impl TraceState {
     pub fn read_vertices(&mut self, mut f: impl FnMut(usize, &Buffer, usize)) {
         for (i, stack) in self.thread_stacks.values_mut().enumerate() {
             stack.sync(self.base_time);
-            f(i, stack.vertices.buffer(), stack.vertices.len());
+            stack.vertices.read_buffers(|buffer, len| {
+                f(i, buffer, len);
+            })
         }
     }
 }
