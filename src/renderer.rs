@@ -1,8 +1,6 @@
-use crate::renderer::trace_state::{CallBox, TraceState};
+use crate::trace_state::{CallBox, TraceState};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
-
-pub mod trace_state;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -100,8 +98,8 @@ struct SurfaceState {
 
 pub struct Renderer {
     instance: wgpu::Instance,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     adapter: wgpu::Adapter,
     surface_state: Option<SurfaceState>,
     shader: wgpu::ShaderModule,
@@ -113,36 +111,12 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     lane_alignment: u32,
-    trace_state: TraceState,
 }
 
 impl Renderer {
-    pub async fn new() -> Self {
-        let instance = wgpu::Instance::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-
-        let limits = adapter.limits();
+    pub fn new(instance: wgpu::Instance, adapter: wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        let limits = device.limits();
         let lane_alignment = limits.min_uniform_buffer_offset_alignment;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: Default::default(),
-                memory_hints: Default::default(),
-                trace: Default::default(),
-            })
-            .await
-            .unwrap();
-
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
         let camera_uniform = CameraUniform {
@@ -237,8 +211,6 @@ impl Renderer {
         });
         let num_indices = INDICES.len() as u32;
 
-        let trace_state = TraceState::new(device.clone(), queue.clone());
-
         Self {
             instance,
             device,
@@ -254,7 +226,6 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             lane_alignment,
-            trace_state,
         }
     }
 
@@ -367,13 +338,13 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, trace_state: &mut TraceState) -> Result<(), wgpu::SurfaceError> {
         let Some(state) = &self.surface_state else {
             return Ok(());
         };
 
-        self.trace_state.sync();
-        let max_depth = self.trace_state.max_depth();
+        trace_state.sync();
+        let max_depth = trace_state.max_depth();
 
         let aspect = if let Some(state) = &self.surface_state {
             state.config.width as f32 / state.config.height as f32
@@ -389,9 +360,9 @@ impl Renderer {
         );
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0);
         self.camera_uniform.view_proj = (proj * view).to_cols_array_2d();
-        self.camera_uniform.base_time = self.trace_state.base_time();
+        self.camera_uniform.base_time = trace_state.base_time();
         self.camera_uniform.max_depth = max_depth;
-        self.camera_uniform.num_threads = self.trace_state.num_threads();
+        self.camera_uniform.num_threads = trace_state.num_threads();
 
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -447,7 +418,7 @@ impl Renderer {
             let camera_bind_group = &self.camera_bind_group;
             let lane_alignment = self.lane_alignment;
 
-            self.trace_state.read_vertices(|lane, buffer, len| {
+            trace_state.read_vertices(|lane, buffer, len| {
                 if len == 0 {
                     return;
                 }
@@ -462,9 +433,5 @@ impl Renderer {
         output.present();
 
         Ok(())
-    }
-
-    pub fn process_events(&mut self, events: &[crate::ringbuffer::RRProfTraceEvent]) {
-        self.trace_state.process_events(events);
     }
 }
