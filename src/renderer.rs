@@ -1,5 +1,6 @@
-use crate::trace_state::{CallBox, TraceState};
+use crate::trace_state::{CallBox, SlowTrace, TraceState};
 use glam::{Mat4, Vec3};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -111,10 +112,17 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     lane_alignment: u32,
+    trace_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
 }
 
 impl Renderer {
-    pub fn new(instance: wgpu::Instance, adapter: wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -> Self {
+    pub fn new(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        trace_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
+    ) -> Self {
         let limits = device.limits();
         let lane_alignment = limits.min_uniform_buffer_offset_alignment;
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
@@ -226,6 +234,7 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             lane_alignment,
+            trace_queue,
         }
     }
 
@@ -338,13 +347,19 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, trace_state: &mut TraceState) -> Result<(), wgpu::SurfaceError> {
+    pub(crate) fn sync(&self) -> bool {
+        let mut updated = false;
+        while let Some(trace) = self.trace_queue.pop() {
+            updated = true;
+            todo!();
+        }
+        updated
+    }
+
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let Some(state) = &self.surface_state else {
             return Ok(());
         };
-
-        trace_state.sync();
-        let max_depth = trace_state.max_depth();
 
         let aspect = if let Some(state) = &self.surface_state {
             state.config.width as f32 / state.config.height as f32
@@ -355,8 +370,8 @@ impl Renderer {
         // カメラの更新
         let view = Mat4::look_at_rh(
             Vec3::new(-1.0, 1.0, 2.0), // eye
-            Vec3::new(0.5, 0.5, 0.5), // center
-            Vec3::Y,                  // up
+            Vec3::new(0.5, 0.5, 0.5),  // center
+            Vec3::Y,                   // up
         );
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0);
         self.camera_uniform.view_proj = (proj * view).to_cols_array_2d();
