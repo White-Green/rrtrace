@@ -11,7 +11,7 @@ use wgpu::{Buffer, BufferUsages, Device, Queue};
 mod gpu_sync_vec;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Default, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CallBox {
     start_time: [u32; 2],
     end_time: [u32; 2],
@@ -19,7 +19,7 @@ pub struct CallBox {
     depth: u32,
 }
 
-fn encode_time(time: u64) -> [u32; 2] {
+pub fn encode_time(time: u64) -> [u32; 2] {
     [
         (time & 0x7fffffff) as u32,
         ((time >> 31) & 0xffffffff) as u32,
@@ -95,12 +95,14 @@ impl FastTrace {
 
 pub struct SlowTrace {
     data: Vec<(u32, Vec<CallStackEntry>, Vec<CallBox>)>,
-    pub end_time: u64,
+    max_depth: u32,
+    end_time: u64,
 }
 
 impl SlowTrace {
     pub fn trace(start_time: u64, fast_trace: FastTrace, events: &[RRProfTraceEvent]) -> SlowTrace {
         let end_time = events.last().unwrap().timestamp();
+        let mut max_depth = 0;
         let FastTrace {
             thread_stacks,
             current_thread,
@@ -126,11 +128,13 @@ impl SlowTrace {
             vertices.reserve(stack.len());
             for (depth, entry) in stack.iter_mut().enumerate() {
                 entry.vertex_index = vertices.len();
+                let depth = depth as u32;
+                max_depth = max_depth.max(depth);
                 vertices.push(CallBox {
                     start_time: encode_time(start_time),
                     end_time: encode_time(end_time),
                     method_id: entry.method_id as u32,
-                    depth: depth as u32,
+                    depth,
                 });
             }
         }
@@ -156,6 +160,7 @@ impl SlowTrace {
                         method_id: event.data() as u32,
                         depth,
                     });
+                    max_depth = max_depth.max(depth);
                 }
                 RRProfTraceEventType::Return => {
                     while let Some(CallStackEntry {
@@ -185,12 +190,14 @@ impl SlowTrace {
                     ) in current_stack.iter_mut().enumerate()
                     {
                         let new_index = current_vertices.len();
+                        let depth = depth as u32;
                         current_vertices.push(CallBox {
                             start_time: encode_time(event.timestamp()),
                             end_time: encode_time(end_time),
                             method_id: method_id as u32,
-                            depth: depth as u32,
+                            depth,
                         });
+                        max_depth = max_depth.max(depth);
                         *vertex_index = new_index;
                     }
                 }
@@ -217,12 +224,23 @@ impl SlowTrace {
         }
         SlowTrace {
             data: call_stack,
+            max_depth,
             end_time,
         }
     }
 
+    pub fn data(&self) -> impl Iterator<Item = (u32, &[CallBox])> {
+        self.data
+            .iter()
+            .map(|&(thread_id, _, ref call_box)| (thread_id, call_box.as_slice()))
+    }
+
     pub fn end_time(&self) -> u64 {
         self.end_time
+    }
+
+    pub fn max_depth(&self) -> u32 {
+        self.max_depth
     }
 }
 
@@ -367,6 +385,25 @@ impl ThreadStack {
             self.visible_call_depth.remove(depth);
         }
     }
+
+    pub(crate) fn update(&mut self, call_stack: Vec<CallStackEntry>, vertices: Vec<CallBox>) {
+        self.call_stack = call_stack;
+
+        self.visible_call_depth = MultiSet::new();
+        for v in &vertices {
+            self.visible_call_depth.insert(v.depth);
+        }
+
+        self.vertices.overwrite(vertices);
+
+        self.ready_for_free_slot.clear();
+        self.free_slot.clear();
+        self.used_slot.clear();
+        for i in 0..self.vertices.len() {
+            self.used_slot.insert(i);
+        }
+        self.free_depth.clear();
+    }
 }
 
 pub struct TraceState {
@@ -473,6 +510,17 @@ impl TraceState {
         self.thread_stacks
             .values_mut()
             .for_each(|stack| stack.sync(self.base_time));
+    }
+
+    pub fn update_with_slow_trace(&mut self, trace: SlowTrace) {
+        self.base_time = trace.end_time();
+        for (tid, call_stack, vertices) in trace.data {
+            let stack = self
+                .thread_stacks
+                .entry(tid)
+                .or_insert_with(|| ThreadStack::new(self.device.clone(), self.queue.clone()));
+            stack.update(call_stack, vertices);
+        }
     }
 
     pub fn read_vertices(&mut self, mut f: impl FnMut(usize, &Buffer, usize)) {

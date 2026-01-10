@@ -1,19 +1,85 @@
 use bytemuck::NoUninit;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::ops::{Index, IndexMut, Range};
+use std::ops::Range;
+use std::sync::atomic;
 use wgpu::{Buffer, BufferAddress, BufferDescriptor, BufferUsages, Device, Queue};
 
-pub struct GpuSyncVec<T> {
-    data: Vec<T>,
-    dirty_range: Range<usize>,
-    device: Device,
-    queue: Queue,
-    gpu_buffer: Vec<Buffer>,
-    max_buffer_size: u64,
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct AllocationId(usize);
+
+impl AllocationId {
+    fn new() -> AllocationId {
+        static COUNTER: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
+        AllocationId(COUNTER.fetch_add(1, atomic::Ordering::Relaxed))
+    }
 }
 
-impl<T> Debug for GpuSyncVec<T>
+pub struct VertexArena<T> {
+    device: Device,
+    queue: Queue,
+    data: Vec<T>,
+    gpu_buffer: Vec<Buffer>,
+    max_buffer_size: u64,
+    usage: BufferUsages,
+    allocations: HashMap<AllocationId, Range<usize>>,
+    free_list: FreeList,
+    dirty_range: Range<usize>,
+}
+
+struct FreeList {
+    by_start: BTreeMap<usize, usize>,
+    by_size: BTreeSet<(usize, usize)>,
+}
+
+impl FreeList {
+    fn new() -> Self {
+        Self {
+            by_start: BTreeMap::new(),
+            by_size: BTreeSet::new(),
+        }
+    }
+
+    fn alloc(&mut self, len: usize) -> Option<Range<usize>> {
+        let &(size, start) = self.by_size.range((len, 0)..).next()?;
+        self.by_size.remove(&(size, start));
+        self.by_start.remove(&start);
+        if size > len {
+            let new_start = start + len;
+            let new_size = size - len;
+            self.by_start.insert(new_start, new_start + new_size);
+            self.by_size.insert((new_size, new_start));
+        }
+        Some(start..start + len)
+    }
+
+    fn dealloc(&mut self, range: Range<usize>) {
+        let mut start = range.start;
+        let mut end = range.end;
+
+        if let Some((&next_start, &next_end)) = self.by_start.range(end..).next() {
+            if next_start == end {
+                self.by_size.remove(&(next_end - next_start, next_start));
+                self.by_start.remove(&next_start);
+                end = next_end;
+            }
+        }
+
+        if let Some((&prev_start, &prev_end)) = self.by_start.range(..start).next_back() {
+            if prev_end == start {
+                self.by_size.remove(&(prev_end - prev_start, prev_start));
+                self.by_start.remove(&prev_start);
+                start = prev_start;
+            }
+        }
+
+        self.by_start.insert(start, end);
+        self.by_size.insert((end - start, start));
+    }
+}
+
+impl<T> Debug for VertexArena<T>
 where
     T: Debug,
 {
@@ -22,25 +88,8 @@ where
     }
 }
 
-impl<T> Index<usize> for GpuSyncVec<T> {
-    type Output = T;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.data[index]
-    }
-}
-
-impl<T> IndexMut<usize> for GpuSyncVec<T> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        let result = &mut self.data[index];
-        self.dirty_range.start = self.dirty_range.start.min(index);
-        self.dirty_range.end = self.dirty_range.end.max(index + 1);
-        result
-    }
-}
-
-impl<T> GpuSyncVec<T> {
-    pub fn new(device: Device, queue: Queue, usage: BufferUsages) -> GpuSyncVec<T> {
+impl<T> VertexArena<T> {
+    pub fn new(device: Device, queue: Queue, usage: BufferUsages) -> VertexArena<T> {
         let max_buffer_size = device.limits().max_buffer_size;
         let gpu_buffer = device.create_buffer(&BufferDescriptor {
             label: None,
@@ -48,48 +97,45 @@ impl<T> GpuSyncVec<T> {
             usage,
             mapped_at_creation: false,
         });
-        GpuSyncVec {
+        VertexArena {
             data: Vec::new(),
-            dirty_range: usize::MAX..0,
             device,
             queue,
             gpu_buffer: vec![gpu_buffer],
             max_buffer_size,
+            usage,
+            allocations: HashMap::new(),
+            free_list: FreeList::new(),
+            dirty_range: usize::MAX..0,
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.data.len()
+    pub fn alloc(&mut self, len: usize) -> (AllocationId, &mut [T])
+    where
+        T: Default,
+    {
+        let id = AllocationId::new();
+        let range = if let Some(range) = self.free_list.alloc(len) {
+            range
+        } else {
+            let start = self.data.len();
+            self.data.resize_with(start + len, T::default);
+            start..start + len
+        };
+
+        self.allocations.insert(id, range.clone());
+        self.dirty_range.start = self.dirty_range.start.min(range.start);
+        self.dirty_range.end = self.dirty_range.end.max(range.end);
+
+        let result = &mut self.data[range.clone()];
+        assert_eq!(result.len(), len);
+        (id, result)
     }
 
-    pub fn get(&self, index: usize) -> Option<&T> {
-        self.data.get(index)
-    }
-
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.data.get_mut(index).inspect(|_| {
-            self.dirty_range.start = self.dirty_range.start.min(index);
-            self.dirty_range.end = self.dirty_range.end.max(index + 1);
-        })
-    }
-
-    pub fn push(&mut self, value: T) {
-        let updated_index = self.data.len();
-        self.data.push(value);
-        self.dirty_range.start = self.dirty_range.start.min(updated_index);
-        self.dirty_range.end = self.dirty_range.end.max(updated_index + 1);
-    }
-
-    pub fn truncate(&mut self, len: usize) {
-        if len < self.data.len() {
-            self.data.truncate(len);
-            self.dirty_range.end = self.dirty_range.end.min(len);
+    pub fn dealloc(&mut self, id: AllocationId) {
+        if let Some(range) = self.allocations.remove(&id) {
+            self.free_list.dealloc(range);
         }
-    }
-
-    pub fn overwrite(&mut self, new_data: Vec<T>) {
-        self.data = new_data;
-        self.dirty_range = 0..self.data.len();
     }
 
     pub fn sync(&mut self)
@@ -205,5 +251,57 @@ impl<T> GpuSyncVec<T> {
                 f(&self.gpu_buffer[num_buffers], buffer_tail);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_free_list_merge() {
+        let mut fl = FreeList::new();
+
+        // [10..20]
+        fl.dealloc(10..20);
+        assert_eq!(fl.by_start.get(&10), Some(&20));
+
+        // [0..5, 10..20]
+        fl.dealloc(0..5);
+        assert_eq!(fl.by_start.len(), 2);
+
+        // [0..5, 10..20, 25..30]
+        fl.dealloc(25..30);
+        assert_eq!(fl.by_start.len(), 3);
+
+        // Merge next: [0..10, 10..20, 25..30] -> [0..20, 25..30]
+        fl.dealloc(5..10);
+        assert_eq!(fl.by_start.len(), 2);
+        assert_eq!(fl.by_start.get(&0), Some(&20));
+
+        // Merge both: [0..20, 20..25, 25..30] -> [0..30]
+        fl.dealloc(20..25);
+        assert_eq!(fl.by_start.len(), 1);
+        assert_eq!(fl.by_start.get(&0), Some(&30));
+    }
+
+    #[test]
+    fn test_free_list_alloc_split() {
+        let mut fl = FreeList::new();
+        fl.dealloc(0..10);
+        fl.dealloc(20..30);
+        fl.dealloc(40..50);
+
+        // Alloc 5. Should pick 0..10
+        let r1 = fl.alloc(5).unwrap();
+        assert_eq!(r1, 0..5);
+        // remains 5..10, 20..30, 40..50
+        assert_eq!(fl.by_start.get(&5), Some(&10));
+
+        // Alloc 10. Should pick 20..30
+        let r2 = fl.alloc(10).unwrap();
+        assert_eq!(r2, 20..30);
+        // remains 5..10, 40..50
+        assert_eq!(fl.by_start.len(), 2);
     }
 }

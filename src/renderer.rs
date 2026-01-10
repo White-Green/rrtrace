@@ -1,7 +1,16 @@
-use crate::trace_state::{CallBox, SlowTrace, TraceState};
+use crate::renderer::vertex_arena::{AllocationId, VertexArena};
+use crate::trace_state::{CallBox, SlowTrace, TraceState, VISIBLE_DURATION, encode_time};
 use glam::{Mat4, Vec3};
+use std::cmp::{Ordering, Reverse};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::{fmt, iter};
+use wgpu::BufferUsages;
 use wgpu::util::DeviceExt;
+
+mod vertex_arena;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -97,6 +106,31 @@ struct SurfaceState {
     depth_texture: wgpu::TextureView,
 }
 
+#[derive(Debug)]
+struct ThreadArena {
+    used_segments: usize,
+    vertex: VertexArena<CallBox>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct TraceBatch {
+    end_time: u64,
+    thread_data: Vec<(u32, AllocationId)>,
+    max_depth: u32,
+}
+
+impl PartialOrd for TraceBatch {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TraceBatch {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.end_time.cmp(&other.end_time)
+    }
+}
+
 pub struct Renderer {
     instance: wgpu::Instance,
     device: wgpu::Device,
@@ -113,6 +147,10 @@ pub struct Renderer {
     camera_bind_group: wgpu::BindGroup,
     lane_alignment: u32,
     trace_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
+    data_per_thread: BTreeMap<u32, ThreadArena>,
+    thread_queue: BinaryHeap<Reverse<TraceBatch>>,
+    base_time: u64,
+    depth: MultiSet<u32>,
 }
 
 impl Renderer {
@@ -235,6 +273,10 @@ impl Renderer {
             camera_bind_group,
             lane_alignment,
             trace_queue,
+            data_per_thread: BTreeMap::new(),
+            thread_queue: BinaryHeap::new(),
+            base_time: 0,
+            depth: MultiSet::new(),
         }
     }
 
@@ -347,11 +389,58 @@ impl Renderer {
         }
     }
 
-    pub(crate) fn sync(&self) -> bool {
+    pub fn sync(&mut self) -> bool {
         let mut updated = false;
         while let Some(trace) = self.trace_queue.pop() {
             updated = true;
-            todo!();
+            let mut allocation_ids = Vec::new();
+            for (thread_id, call_box) in trace.data() {
+                let s = self.data_per_thread.entry(thread_id).or_insert_with(|| ThreadArena {
+                    used_segments: 0,
+                    vertex: VertexArena::new(
+                        self.device.clone(),
+                        self.queue.clone(),
+                        BufferUsages::COPY_DST | BufferUsages::VERTEX,
+                    ),
+                });
+                s.used_segments += 1;
+                let (allocation_id, slot) = s.vertex.alloc(call_box.len());
+                slot.copy_from_slice(call_box);
+                allocation_ids.push((thread_id, allocation_id));
+            }
+            let end_time = trace.end_time();
+            let max_depth = trace.max_depth();
+            self.thread_queue.push(Reverse(TraceBatch {
+                end_time,
+                max_depth,
+                thread_data: allocation_ids,
+            }));
+            self.base_time = self.base_time.max(end_time);
+            self.depth.insert(max_depth);
+        }
+        while let Some(Reverse(TraceBatch { end_time, .. })) = self.thread_queue.peek()
+            && end_time + VISIBLE_DURATION < self.base_time
+        {
+            let Reverse(TraceBatch {
+                thread_data,
+                max_depth,
+                ..
+            }) = self.thread_queue.pop().unwrap();
+            self.depth.remove(max_depth);
+            for (thread_id, allocation_id) in thread_data {
+                match self.data_per_thread.entry(thread_id) {
+                    Entry::Vacant(_) => unreachable!(),
+                    Entry::Occupied(mut s) => {
+                        let s_ref = s.get_mut();
+                        s_ref.used_segments -= 1;
+                        if s_ref.used_segments == 0 {
+                            s.remove();
+                        } else {
+                            s_ref.vertex.dealloc(allocation_id);
+                        }
+                    }
+                }
+            }
         }
         updated
     }
@@ -375,9 +464,9 @@ impl Renderer {
         );
         let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0);
         self.camera_uniform.view_proj = (proj * view).to_cols_array_2d();
-        self.camera_uniform.base_time = trace_state.base_time();
-        self.camera_uniform.max_depth = max_depth;
-        self.camera_uniform.num_threads = trace_state.num_threads();
+        self.camera_uniform.base_time = encode_time(self.base_time);
+        self.camera_uniform.max_depth = self.depth.max().map_or(1, |&m| m + 1);
+        self.camera_uniform.num_threads = self.data_per_thread.len() as u32;
 
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -433,20 +522,78 @@ impl Renderer {
             let camera_bind_group = &self.camera_bind_group;
             let lane_alignment = self.lane_alignment;
 
-            trace_state.read_vertices(|lane, buffer, len| {
-                if len == 0 {
-                    return;
-                }
-                let offset = lane as u32 * lane_alignment;
-                render_pass.set_bind_group(0, camera_bind_group, &[offset]);
-                render_pass.set_vertex_buffer(1, buffer.slice(..));
-                render_pass.draw_indexed(0..num_indices, 0, 0..len as u32);
-            });
+            for (lane, (_, vertices)) in self.data_per_thread.iter_mut().enumerate() {
+                vertices.vertex.sync();
+                vertices.vertex.read_buffers(|buffer, len| {
+                    if len == 0 {
+                        return;
+                    }
+                    let offset = lane as u32 * lane_alignment;
+                    render_pass.set_bind_group(0, camera_bind_group, &[offset]);
+                    render_pass.set_vertex_buffer(1, buffer.slice(..));
+                    render_pass.draw_indexed(0..num_indices, 0, 0..len as u32);
+                });
+            }
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+}
+
+struct MultiSet<T> {
+    inner: BTreeMap<T, usize>,
+}
+
+impl<T> Default for MultiSet<T> {
+    fn default() -> Self {
+        MultiSet::new()
+    }
+}
+
+impl<T> Debug for MultiSet<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_set()
+            .entries(self.inner.iter().flat_map(|(k, &v)| iter::repeat_n(k, v)))
+            .finish()
+    }
+}
+
+impl<T> MultiSet<T> {
+    fn new() -> MultiSet<T> {
+        MultiSet {
+            inner: BTreeMap::new(),
+        }
+    }
+}
+impl<T> MultiSet<T>
+where
+    T: Ord,
+{
+    fn insert(&mut self, value: T) {
+        *self.inner.entry(value).or_default() += 1;
+    }
+
+    fn remove(&mut self, value: T) {
+        match self.inner.entry(value) {
+            Entry::Vacant(_) => return,
+            Entry::Occupied(mut entry) => {
+                let count = entry.get_mut();
+                if *count <= 1 {
+                    entry.remove();
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+    }
+
+    fn max(&self) -> Option<&T> {
+        self.inner.last_key_value().map(|(v, _)| v)
     }
 }

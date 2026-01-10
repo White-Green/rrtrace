@@ -1,9 +1,9 @@
 use crate::renderer::Renderer;
 use crate::ringbuffer::{EventRingBuffer, RRProfTraceEvent};
-use crate::trace_state::{FastTrace, SlowTrace, TraceState, VISIBLE_DURATION};
+use crate::trace_state::{FastTrace, SlowTrace, VISIBLE_DURATION};
 use std::ffi::CString;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, atomic};
+use std::sync::{Arc, atomic};
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
 use winit::event::*;
