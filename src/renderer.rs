@@ -1,9 +1,9 @@
 use crate::renderer::vertex_arena::{AllocationId, VertexArena};
-use crate::trace_state::{CallBox, SlowTrace, TraceState, VISIBLE_DURATION, encode_time};
+use crate::trace_state::{CallBox, SlowTrace, VISIBLE_DURATION, encode_time};
 use glam::{Mat4, Vec3};
 use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::{fmt, iter};
