@@ -216,6 +216,27 @@ impl SlowTrace {
                     }
                     let (_, new_stack, new_vertices) =
                         &mut call_stack[index.unwrap_or_else(convert::identity)];
+
+                    for (
+                        depth,
+                        &mut CallStackEntry {
+                            ref mut vertex_index,
+                            method_id,
+                        },
+                    ) in new_stack.iter_mut().enumerate()
+                    {
+                        let new_index = new_vertices.len();
+                        let depth = depth as u32;
+                        new_vertices.push(CallBox {
+                            start_time: encode_time(event.timestamp()),
+                            end_time: encode_time(end_time),
+                            method_id: method_id as u32,
+                            depth,
+                        });
+                        max_depth = max_depth.max(depth);
+                        *vertex_index = new_index;
+                    }
+
                     (current_stack, current_vertices) = (new_stack, new_vertices);
                 }
                 RRProfTraceEventType::ThreadExit
