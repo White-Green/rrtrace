@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +27,8 @@ jobs:
         id: get_version
         shell: bash
         run: |
+          set -euo pipefail
+
           VERSION=$(ruby -Ilib -r rrtrace/version -e 'puts Rrtrace::VERSION')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -37,6 +39,8 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
+          set -euo pipefail
+
           gem build rrtrace.gemspec
           mkdir -p pkg
           mv rrtrace-${{ steps.get_version.outputs.version }}.gem pkg/
@@ -47,6 +51,8 @@ jobs:
           GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
         shell: bash
         run: |
+          set -euo pipefail
+
           VERSION=${{ steps.get_version.outputs.version }}
           
           if [ -z "$GEM_HOST_API_KEY" ]; then
@@ -76,14 +82,14 @@ jobs:
             # Note: sed expression might need to be robust against version strings
             PLATFORM=$(echo $GEM_FILENAME | sed -E "s/rrtrace-$VERSION-?//; s/\.gem$//")
             if [ -z "$PLATFORM" ]; then PLATFORM="ruby"; fi
-            
+          
             echo "Checking if $GEM_FILENAME (platform: $PLATFORM) is already published..."
-            
+          
             # Check if this specific version and platform exists using RubyGems API
             if echo "$PUBLISHED_VERSIONS" | jq -e ".[] | select(.number == \"$VERSION\" and .platform == \"$PLATFORM\")" > /dev/null 2>&1; then
               echo "$GEM_FILENAME is already published. Skipping."
             else
               echo "Publishing $GEM_FILENAME..."
-              gem push $gem_file || echo "Failed to push $gem_file (it might already exist on the server)"
+              gem push $gem_file
             fi
           done
