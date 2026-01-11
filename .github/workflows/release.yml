@@ -45,26 +45,52 @@ jobs:
           mkdir -p pkg
           mv rrtrace-${{ steps.get_version.outputs.version }}.gem pkg/
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gems-${{ matrix.os }}
+          path: pkg/*.gem
+
+  release:
+    name: Release Gems
+    needs: build
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: pkg
+          merge-multiple: true
+
+      - name: Configure RubyGems credentials
+        uses: rubygems/configure-rubygems-credentials@v1.0.0
+
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(ruby -Ilib -r rrtrace/version -e 'puts Rrtrace::VERSION')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Publish to RubyGems
-        if: github.ref_name == github.event.repository.default_branch
-        env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
 
           VERSION=${{ steps.get_version.outputs.version }}
-          
-          if [ -z "$GEM_HOST_API_KEY" ]; then
-            echo "GEM_HOST_API_KEY is not set. Skipping publish."
-            exit 1
-          fi
-
-          # Setup credentials
-          mkdir -p ~/.gem
-          echo "---" > ~/.gem/credentials
-          echo ":rubygems_api_key: $GEM_HOST_API_KEY" >> ~/.gem/credentials
-          chmod 0600 ~/.gem/credentials
 
           # Fetch published versions from RubyGems API
           echo "Fetching published versions for rrtrace..."
@@ -73,23 +99,39 @@ jobs:
             PUBLISHED_VERSIONS="[]"
           fi
 
+          PUBLISHED_COUNT=0
+
           for gem_file in pkg/*.gem; do
             if [ ! -f "$gem_file" ]; then continue; fi
             GEM_FILENAME=$(basename $gem_file)
-            # Determine platform from filename
-            # rrtrace-0.1.0.gem -> platform: ruby
-            # rrtrace-0.1.0-x86_64-linux.gem -> platform: x86_64-linux
-            # Note: sed expression might need to be robust against version strings
             PLATFORM=$(echo $GEM_FILENAME | sed -E "s/rrtrace-$VERSION-?//; s/\.gem$//")
             if [ -z "$PLATFORM" ]; then PLATFORM="ruby"; fi
           
             echo "Checking if $GEM_FILENAME (platform: $PLATFORM) is already published..."
           
-            # Check if this specific version and platform exists using RubyGems API
             if echo "$PUBLISHED_VERSIONS" | jq -e ".[] | select(.number == \"$VERSION\" and .platform == \"$PLATFORM\")" > /dev/null 2>&1; then
               echo "$GEM_FILENAME is already published. Skipping."
             else
               echo "Publishing $GEM_FILENAME..."
               gem push $gem_file
+              PUBLISHED_COUNT=$((PUBLISHED_COUNT + 1))
             fi
           done
+          
+          echo "PUBLISHED_COUNT=$PUBLISHED_COUNT" >> $GITHUB_ENV
+
+      - name: Create Tag
+        if: env.PUBLISHED_COUNT != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="v${{ steps.get_version.outputs.version }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists."
+          else
+            echo "Creating and pushing tag $VERSION..."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$VERSION"
+            git push origin "$VERSION"
+          fi
