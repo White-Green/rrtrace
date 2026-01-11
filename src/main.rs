@@ -1,5 +1,5 @@
 use crate::renderer::Renderer;
-use crate::ringbuffer::{EventRingBuffer, RRProfTraceEvent};
+use crate::ringbuffer::{EventRingBuffer, RRTraceEvent};
 use crate::trace_state::{FastTrace, SlowTrace, VISIBLE_DURATION};
 use std::ffi::CString;
 use std::sync::atomic::AtomicU64;
@@ -35,7 +35,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("rrprof visualizer"))
+                .create_window(Window::default_attributes().with_title("rrtrace visualizer"))
                 .unwrap(),
         );
         self.renderer.set_window(window.clone());
@@ -85,7 +85,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    assert_eq!(env::args().len(), 2, "Usage: rrprof <shm_name>");
+    assert_eq!(env::args().len(), 2, "Usage: rrtrace <shm_name>");
     let shm_name = env::args().nth(1).unwrap();
 
     let (instance, adapter, device, queue) = pollster::block_on(init_gpu());
@@ -141,13 +141,13 @@ async fn init_gpu() -> (wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue
 
 fn queue_pipe_thread(
     shm_name: String,
-    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRProfTraceEvent>>>,
+    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRTraceEvent>>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let shm = unsafe {
             shm::SharedMemory::open(
                 CString::new(shm_name).unwrap(),
-                mem::size_of::<ringbuffer::RRProfEventRingBuffer>(),
+                mem::size_of::<ringbuffer::RRTraceEventRingBuffer>(),
             )
         };
         let mut ringbuffer = unsafe { EventRingBuffer::new(shm.as_ptr(), move || drop(shm)) };
@@ -163,7 +163,7 @@ fn queue_pipe_thread(
     }
 }
 fn trace_thread(
-    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRProfTraceEvent>>>,
+    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRTraceEvent>>>,
     result_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {

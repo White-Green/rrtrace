@@ -14,7 +14,7 @@
 !/mise.toml
 !/Rakefile
 !/README.md
-!/rrprof.gemspec
+!/rrtrace.gemspec
 
 *.so
 *.bundle

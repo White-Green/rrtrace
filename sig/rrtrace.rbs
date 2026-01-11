@@ -1,4 +1,4 @@
-module Rrprof
+module Rrtrace
   VERSION: String
   def self.visualizer_path: () -> String
 end

@@ -2,7 +2,7 @@ use std::sync::atomic::{self, AtomicU64};
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
-pub struct RRProfTraceEvent {
+pub struct RRTraceEvent {
     timestamp_and_event_type: u64,
     data: u64,
 }
@@ -10,7 +10,7 @@ pub struct RRProfTraceEvent {
 const EVENT_TYPE_MASK: u64 = 0xF000000000000000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RRProfTraceEventType {
+pub enum RRTraceEventType {
     Call,
     Return,
     GCStart,
@@ -22,22 +22,22 @@ pub enum RRProfTraceEventType {
     ThreadExit,
 }
 
-impl RRProfTraceEvent {
+impl RRTraceEvent {
     pub fn timestamp(&self) -> u64 {
         self.timestamp_and_event_type & !EVENT_TYPE_MASK
     }
 
-    pub fn event_type(&self) -> RRProfTraceEventType {
+    pub fn event_type(&self) -> RRTraceEventType {
         match self.timestamp_and_event_type & EVENT_TYPE_MASK {
-            0x0000000000000000 => RRProfTraceEventType::Call,
-            0x1000000000000000 => RRProfTraceEventType::Return,
-            0x2000000000000000 => RRProfTraceEventType::GCStart,
-            0x3000000000000000 => RRProfTraceEventType::GCEnd,
-            0x4000000000000000 => RRProfTraceEventType::ThreadStart,
-            0x5000000000000000 => RRProfTraceEventType::ThreadReady,
-            0x6000000000000000 => RRProfTraceEventType::ThreadSuspended,
-            0x7000000000000000 => RRProfTraceEventType::ThreadResume,
-            0x8000000000000000 => RRProfTraceEventType::ThreadExit,
+            0x0000000000000000 => RRTraceEventType::Call,
+            0x1000000000000000 => RRTraceEventType::Return,
+            0x2000000000000000 => RRTraceEventType::GCStart,
+            0x3000000000000000 => RRTraceEventType::GCEnd,
+            0x4000000000000000 => RRTraceEventType::ThreadStart,
+            0x5000000000000000 => RRTraceEventType::ThreadReady,
+            0x6000000000000000 => RRTraceEventType::ThreadSuspended,
+            0x7000000000000000 => RRTraceEventType::ThreadResume,
+            0x8000000000000000 => RRTraceEventType::ThreadExit,
             _ => unreachable!(),
         }
     }
@@ -51,26 +51,26 @@ pub const SIZE: usize = 65_536;
 pub const MASK: usize = SIZE - 1;
 
 #[repr(C, align(64))]
-struct RRProfEventRingBufferWriter {
+struct RRTraceEventRingBufferWriter {
     write_index: AtomicU64,
     read_index_cache: u64,
 }
 
 #[repr(C, align(64))]
-struct RRProfEventRingBufferReader {
+struct RRTraceEventRingBufferReader {
     read_index: AtomicU64,
     write_index_cache: u64,
 }
 
 #[repr(C)]
-pub struct RRProfEventRingBuffer {
-    buffer: [RRProfTraceEvent; SIZE],
-    writer: RRProfEventRingBufferWriter,
-    reader: RRProfEventRingBufferReader,
+pub struct RRTraceEventRingBuffer {
+    buffer: [RRTraceEvent; SIZE],
+    writer: RRTraceEventRingBufferWriter,
+    reader: RRTraceEventRingBufferReader,
 }
 
-impl RRProfEventRingBuffer {
-    unsafe fn read(this: *mut Self, buffer: &mut [RRProfTraceEvent]) -> usize {
+impl RRTraceEventRingBuffer {
+    unsafe fn read(this: *mut Self, buffer: &mut [RRTraceEvent]) -> usize {
         unsafe {
             let read_index = (*this).reader.read_index.load(atomic::Ordering::Acquire);
             let write_index = (*this).reader.write_index_cache;
@@ -107,13 +107,13 @@ impl RRProfEventRingBuffer {
 }
 
 pub struct EventRingBuffer {
-    ringbuffer: *mut RRProfEventRingBuffer,
+    ringbuffer: *mut RRTraceEventRingBuffer,
     drop: Option<Box<dyn FnOnce()>>,
 }
 
 impl EventRingBuffer {
     pub unsafe fn new(
-        ringbuffer: *mut RRProfEventRingBuffer,
+        ringbuffer: *mut RRTraceEventRingBuffer,
         drop: impl FnOnce() + 'static,
     ) -> Self {
         EventRingBuffer {
@@ -122,8 +122,8 @@ impl EventRingBuffer {
         }
     }
 
-    pub fn read(&mut self, buffer: &mut [RRProfTraceEvent]) -> usize {
-        unsafe { RRProfEventRingBuffer::read(self.ringbuffer, buffer) }
+    pub fn read(&mut self, buffer: &mut [RRTraceEvent]) -> usize {
+        unsafe { RRTraceEventRingBuffer::read(self.ringbuffer, buffer) }
     }
 }
 

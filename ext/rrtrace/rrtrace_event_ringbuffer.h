@@ -1,13 +1,13 @@
-#ifndef RRPROF_EVENT_RINGBUFFER_H
-#define RRPROF_EVENT_RINGBUFFER_H
+#ifndef RRTRACE_EVENT_RINGBUFFER_H
+#define RRTRACE_EVENT_RINGBUFFER_H
 
-#include "rrprof_event.h"
+#include "rrtrace_event.h"
 
 #define SIZE 65536
 #define MASK (SIZE - 1)
 
 typedef struct {
-    RRProfTraceEvent buffer[SIZE];
+    RRTraceEvent buffer[SIZE];
     alignas(64) struct {
         atomic_uint_fast64_t write_index;
         uint64_t read_index_cache;
@@ -16,16 +16,16 @@ typedef struct {
         atomic_uint_fast64_t read_index;
         uint64_t write_index_cache;
     } reader;
-} RRProfEventRingBuffer;
+} RRTraceEventRingBuffer;
 
-static inline void rrprof_event_ringbuffer_init(RRProfEventRingBuffer *rb) {
+static inline void rrtrace_event_ringbuffer_init(RRTraceEventRingBuffer *rb) {
     atomic_store_explicit(&rb->writer.write_index, 0, memory_order_relaxed);
     rb->writer.read_index_cache = 0;
     atomic_store_explicit(&rb->reader.read_index, 0, memory_order_relaxed);
     rb->reader.write_index_cache = 0;
 }
 
-static inline int rrprof_event_ringbuffer_push(RRProfEventRingBuffer *rb, RRProfTraceEvent event) {
+static inline int rrtrace_event_ringbuffer_push(RRTraceEventRingBuffer *rb, RRTraceEvent event) {
     if (rb == NULL) return 1;
     uint64_t write_index = atomic_load_explicit(&rb->writer.write_index, memory_order_relaxed);
     uint64_t read_index_cache = rb->writer.read_index_cache;
@@ -42,4 +42,4 @@ static inline int rrprof_event_ringbuffer_push(RRProfEventRingBuffer *rb, RRProf
 #undef MASK
 #undef SIZE
 
-#endif /* RRPROF_EVENT_RINGBUFFER_H */
+#endif /* RRTRACE_EVENT_RINGBUFFER_H */

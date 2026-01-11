@@ -1,4 +1,4 @@
-use crate::ringbuffer::{RRProfTraceEvent, RRProfTraceEventType};
+use crate::ringbuffer::{RRTraceEvent, RRTraceEventType};
 use smallvec::SmallVec;
 use std::convert;
 use std::fmt::Debug;
@@ -36,25 +36,25 @@ impl FastTrace {
             in_gc: false,
         }
     }
-    pub fn process_events(&mut self, events: &[RRProfTraceEvent]) {
+    pub fn process_events(&mut self, events: &[RRTraceEvent]) {
         self.in_gc = false;
         for &event in events {
             match event.event_type() {
-                RRProfTraceEventType::Call => {
+                RRTraceEventType::Call => {
                     let method_id = event.data();
                     self.thread_stacks[self.current_thread as usize]
                         .1
                         .push(method_id);
                 }
-                RRProfTraceEventType::Return => {
+                RRTraceEventType::Return => {
                     let method_id = event.data();
                     let stack = &mut self.thread_stacks[self.current_thread as usize].1;
                     while stack.pop().is_some_and(|m| m != method_id) {}
                 }
-                RRProfTraceEventType::ThreadSuspended => {
+                RRTraceEventType::ThreadSuspended => {
                     self.current_thread = u32::MAX;
                 }
-                RRProfTraceEventType::ThreadResume => {
+                RRTraceEventType::ThreadResume => {
                     let thread_id = event.data() as u32;
                     let index = match self
                         .thread_stacks
@@ -69,7 +69,7 @@ impl FastTrace {
                     };
                     self.current_thread = index as u32;
                 }
-                RRProfTraceEventType::ThreadExit => {
+                RRTraceEventType::ThreadExit => {
                     let thread_id = event.data() as u32;
                     if let Ok(index) = self
                         .thread_stacks
@@ -78,13 +78,13 @@ impl FastTrace {
                         self.thread_stacks.remove(index);
                     };
                 }
-                RRProfTraceEventType::GCStart
-                | RRProfTraceEventType::GCEnd
-                | RRProfTraceEventType::ThreadStart
-                | RRProfTraceEventType::ThreadReady => {}
+                RRTraceEventType::GCStart
+                | RRTraceEventType::GCEnd
+                | RRTraceEventType::ThreadStart
+                | RRTraceEventType::ThreadReady => {}
             }
         }
-        self.in_gc = events.last().unwrap().event_type() == RRProfTraceEventType::GCStart;
+        self.in_gc = events.last().unwrap().event_type() == RRTraceEventType::GCStart;
     }
 }
 
@@ -101,7 +101,7 @@ pub struct SlowTrace {
 }
 
 impl SlowTrace {
-    pub fn trace(start_time: u64, fast_trace: FastTrace, events: &[RRProfTraceEvent]) -> SlowTrace {
+    pub fn trace(start_time: u64, fast_trace: FastTrace, events: &[RRTraceEvent]) -> SlowTrace {
         let end_time = events.last().unwrap().timestamp();
         let mut max_depth = 0;
         let FastTrace {
@@ -148,7 +148,7 @@ impl SlowTrace {
             });
         for event in events {
             match event.event_type() {
-                RRProfTraceEventType::Call => {
+                RRTraceEventType::Call => {
                     let vertex_index = current_vertices.len();
                     let depth = current_stack.len() as u32;
                     current_stack.push(CallStackEntry {
@@ -163,7 +163,7 @@ impl SlowTrace {
                     });
                     max_depth = max_depth.max(depth);
                 }
-                RRProfTraceEventType::Return => {
+                RRTraceEventType::Return => {
                     while let Some(CallStackEntry {
                         vertex_index,
                         method_id,
@@ -175,13 +175,13 @@ impl SlowTrace {
                         }
                     }
                 }
-                RRProfTraceEventType::GCStart => {
+                RRTraceEventType::GCStart => {
                     for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
                         current_vertices[*vertex_index].end_time = encode_time(event.timestamp());
                         *vertex_index = usize::MAX;
                     }
                 }
-                RRProfTraceEventType::GCEnd => {
+                RRTraceEventType::GCEnd => {
                     for (
                         depth,
                         &mut CallStackEntry {
@@ -202,13 +202,13 @@ impl SlowTrace {
                         *vertex_index = new_index;
                     }
                 }
-                RRProfTraceEventType::ThreadSuspended => {
+                RRTraceEventType::ThreadSuspended => {
                     for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
                         current_vertices[*vertex_index].end_time = encode_time(event.timestamp());
                         *vertex_index = usize::MAX;
                     }
                 }
-                RRProfTraceEventType::ThreadResume => {
+                RRTraceEventType::ThreadResume => {
                     let thread_id = event.data() as u32;
                     let index = call_stack.binary_search_by_key(&thread_id, |&(tid, _, _)| tid);
                     if let Err(i) = index {
@@ -239,9 +239,9 @@ impl SlowTrace {
 
                     (current_stack, current_vertices) = (new_stack, new_vertices);
                 }
-                RRProfTraceEventType::ThreadExit
-                | RRProfTraceEventType::ThreadStart
-                | RRProfTraceEventType::ThreadReady => {}
+                RRTraceEventType::ThreadExit
+                | RRTraceEventType::ThreadStart
+                | RRTraceEventType::ThreadReady => {}
             }
         }
         SlowTrace {

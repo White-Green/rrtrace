@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "lib/rrprof/version"
+require_relative "lib/rrtrace/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "rrprof"
-  spec.version = Rrprof::VERSION
+  spec.name = "rrtrace"
+  spec.version = Rrtrace::VERSION
   spec.authors = ["White-Green"]
   spec.email = ["43771790+White-Green@users.noreply.github.com"]
 
@@ -31,7 +31,7 @@ Gem::Specification.new do |spec|
   spec.bindir = "exe"
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
-  spec.extensions = ["ext/rrprof/extconf.rb"]
+  spec.extensions = ["ext/rrtrace/extconf.rb"]
 
   # Uncomment to register a new dependency of your gem
   # spec.add_dependency "example-gem", "~> 1.0"

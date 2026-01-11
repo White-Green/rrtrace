@@ -5,7 +5,7 @@
 #include <stdio.h>
 
 static inline void generate_shared_memory_name(char *buffer, size_t size) {
-    snprintf(buffer, size, "Local\\rrprof_shm_%lu_%lu", GetCurrentProcessId(), GetTickCount());
+    snprintf(buffer, size, "Local\\rrtrace_shm_%lu_%lu", GetCurrentProcessId(), GetTickCount());
 }
 
 static inline void* open_shared_memory(const char *name, int size) {

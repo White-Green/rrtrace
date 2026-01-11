@@ -11,7 +11,7 @@
 static inline void generate_shared_memory_name(char *buffer, size_t size) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
-    snprintf(buffer, size, "/rrprof_shm_%d_%d", getpid(), (int)ts.tv_nsec);
+    snprintf(buffer, size, "/rrtrace_shm_%d_%d", getpid(), (int)ts.tv_nsec);
 }
 
 static inline void* open_shared_memory(const char *name, int size) {

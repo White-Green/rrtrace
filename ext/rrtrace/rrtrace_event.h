@@ -1,5 +1,5 @@
-#ifndef RRPROF_EVENT_H
-#define RRPROF_EVENT_H
+#ifndef RRTRACE_EVENT_H
+#define RRTRACE_EVENT_H
 
 #include <time.h>
 #include <stdatomic.h>
@@ -20,7 +20,7 @@
 typedef struct {
     uint64_t timestamp_and_event_type;
     uint64_t data;
-} RRProfTraceEvent;
+} RRTraceEvent;
 
 static inline uint64_t now(void) {
     struct timespec ts;
@@ -36,62 +36,62 @@ static inline uint64_t now(void) {
     }
 }
 
-static inline RRProfTraceEvent event_call(uint64_t method_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_call(uint64_t method_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_CALL;
     event.data = method_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_return(uint64_t method_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_return(uint64_t method_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_RETURN;
     event.data = method_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_gc_start(void) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_gc_start(void) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_GC_START;
     return event;
 }
 
-static inline RRProfTraceEvent event_gc_end(void) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_gc_end(void) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_GC_END;
     return event;
 }
 
-static inline RRProfTraceEvent event_thread_start(uint32_t thread_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_thread_start(uint32_t thread_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_THREAD_START;
     event.data = thread_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_thread_ready(uint32_t thread_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_thread_ready(uint32_t thread_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_THREAD_READY;
     event.data = thread_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_thread_suspended(uint32_t thread_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_thread_suspended(uint32_t thread_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_THREAD_SUSPENDED;
     event.data = thread_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_thread_resume(uint32_t thread_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_thread_resume(uint32_t thread_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_THREAD_RESUME;
     event.data = thread_id;
     return event;
 }
 
-static inline RRProfTraceEvent event_thread_exit(uint32_t thread_id) {
-    RRProfTraceEvent event;
+static inline RRTraceEvent event_thread_exit(uint32_t thread_id) {
+    RRTraceEvent event;
     event.timestamp_and_event_type = now() | EVENT_TYPE_THREAD_EXIT;
     event.data = thread_id;
     return event;
@@ -108,4 +108,4 @@ static inline RRProfTraceEvent event_thread_exit(uint32_t thread_id) {
 #undef EVENT_TYPE_THREAD_EXIT
 #undef EVENT_TYPE_MASK
 
-#endif /* RRPROF_EVENT_H */
+#endif /* RRTRACE_EVENT_H */
