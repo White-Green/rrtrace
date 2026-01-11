@@ -37,7 +37,6 @@ impl FastTrace {
         }
     }
     pub fn process_events(&mut self, events: &[RRTraceEvent]) {
-        self.in_gc = false;
         for &event in events {
             match event.event_type() {
                 RRTraceEventType::Call => {
@@ -98,6 +97,7 @@ pub struct SlowTrace {
     data: Vec<(u32, Vec<CallStackEntry>, Vec<CallBox>)>,
     max_depth: u32,
     end_time: u64,
+    gc_events: Vec<u64>,
 }
 
 impl SlowTrace {
@@ -109,6 +109,7 @@ impl SlowTrace {
             current_thread,
             in_gc,
         } = fast_trace;
+        let mut gc_events = Vec::new();
         let mut call_stack = thread_stacks
             .into_iter()
             .map(|(thread_id, stack)| {
@@ -176,12 +177,14 @@ impl SlowTrace {
                     }
                 }
                 RRTraceEventType::GCStart => {
+                    gc_events.push(event.timestamp());
                     for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
                         current_vertices[*vertex_index].end_time = encode_time(event.timestamp());
                         *vertex_index = usize::MAX;
                     }
                 }
                 RRTraceEventType::GCEnd => {
+                    gc_events.push(event.timestamp());
                     for (
                         depth,
                         &mut CallStackEntry {
@@ -248,6 +251,7 @@ impl SlowTrace {
             data: call_stack,
             max_depth,
             end_time,
+            gc_events,
         }
     }
 
@@ -255,6 +259,10 @@ impl SlowTrace {
         self.data
             .iter()
             .map(|&(thread_id, _, ref call_box)| (thread_id, call_box.as_slice()))
+    }
+
+    pub fn gc_events(&self) -> &[u64] {
+        &self.gc_events
     }
 
     pub fn end_time(&self) -> u64 {

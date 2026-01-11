@@ -9,6 +9,10 @@ struct CallBox {
     @location(4) depth: u32,
 }
 
+struct GCBox {
+    @location(1) time: vec2<u32>,
+}
+
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     base_time: vec2<u32>, // x: lo, y: hi
@@ -85,4 +89,27 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
+}
+
+struct GCVertex {
+    @location(0) position: vec2<f32>,
+}
+
+@vertex
+fn vs_gc(
+    v: GCVertex,
+    gc: GCBox,
+) -> VertexOutput {
+    let time = sub64(camera.base_time, gc.time);
+
+    let world_pos = vec3<f32>(
+        u64tof32(time) / 500000000.0,
+        v.position.x,
+        v.position.y,
+    );
+
+    var out: VertexOutput;
+    out.color = vec4<f32>(1.0, 0.5, 0.0, 0.1);
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
+    return out;
 }

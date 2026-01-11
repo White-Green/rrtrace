@@ -69,6 +69,28 @@ impl CallBox {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GCBox {
+    time: [u32; 2],
+}
+
+impl GCBox {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GCBox>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32x2,
+                },
+            ],
+        }
+    }
+}
+
 const VERTICES: &[Vertex] = &[
     Vertex::new(0.0, 0.0, 0.2),
     Vertex::new(1.0, 0.0, 0.2),
@@ -82,6 +104,41 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[
     0, 2, 3, 0, 3, 1, 1, 3, 7, 1, 7, 5, 5, 7, 6, 5, 6, 4, 4, 6, 2, 4, 2, 0, 2, 6, 7, 2, 7, 3,
+];
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct GCVertex {
+    position: [f32; 2],
+}
+
+impl GCVertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GCVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x2,
+            }],
+        }
+    }
+}
+
+const GC_VERTICES: &[GCVertex] = &[
+    GCVertex {
+        position: [0.0, 0.0],
+    },
+    GCVertex {
+        position: [0.0, 1.0],
+    },
+    GCVertex {
+        position: [1.0, 0.0],
+    },
+    GCVertex {
+        position: [1.0, 1.0],
+    },
 ];
 
 #[repr(C)]
@@ -103,6 +160,7 @@ struct SurfaceState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    gc_pipeline: wgpu::RenderPipeline,
     depth_texture: wgpu::TextureView,
 }
 
@@ -116,6 +174,7 @@ struct ThreadArena {
 struct TraceBatch {
     end_time: u64,
     thread_data: Vec<(u32, AllocationId)>,
+    gc_data: Option<AllocationId>,
     max_depth: u32,
 }
 
@@ -140,6 +199,7 @@ pub struct Renderer {
     shader: wgpu::ShaderModule,
     render_pipeline_layout: wgpu::PipelineLayout,
     vertex_buffer: wgpu::Buffer,
+    gc_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     camera_uniform: CameraUniform,
@@ -148,6 +208,7 @@ pub struct Renderer {
     lane_alignment: u32,
     trace_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
     data_per_thread: BTreeMap<u32, ThreadArena>,
+    gc_vertex: VertexArena<GCBox>,
     thread_queue: BinaryHeap<Reverse<TraceBatch>>,
     base_time: u64,
     depth: MultiSet<u32>,
@@ -250,6 +311,11 @@ impl Renderer {
             contents: bytemuck::cast_slice(VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let gc_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("GC Vertex Buffer"),
+            contents: bytemuck::cast_slice(GC_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
             contents: bytemuck::cast_slice(INDICES),
@@ -259,13 +325,14 @@ impl Renderer {
 
         Self {
             instance,
-            device,
-            queue,
+            device: device.clone(),
+            queue: queue.clone(),
             adapter,
             surface_state: None,
             shader,
             render_pipeline_layout,
             vertex_buffer,
+            gc_vertex_buffer,
             index_buffer,
             num_indices,
             camera_uniform,
@@ -274,6 +341,11 @@ impl Renderer {
             lane_alignment,
             trace_queue,
             data_per_thread: BTreeMap::new(),
+            gc_vertex: VertexArena::new(
+                device,
+                queue,
+                BufferUsages::COPY_DST | BufferUsages::VERTEX,
+            ),
             thread_queue: BinaryHeap::new(),
             base_time: 0,
             depth: MultiSet::new(),
@@ -345,12 +417,55 @@ impl Renderer {
                 multiview_mask: None,
             });
 
+        let gc_pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("GC Pipeline"),
+                layout: Some(&self.render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &self.shader,
+                    entry_point: Some("vs_gc"),
+                    buffers: &[GCVertex::desc(), GCBox::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                cache: None,
+                multiview_mask: None,
+            });
+
         let depth_texture = Self::create_depth_texture(&self.device, &config);
 
         self.surface_state = Some(SurfaceState {
             surface,
             config,
             render_pipeline,
+            gc_pipeline,
             depth_texture,
         });
     }
@@ -408,12 +523,33 @@ impl Renderer {
                 slot.copy_from_slice(call_box);
                 allocation_ids.push((thread_id, allocation_id));
             }
+
+            let gc_events = trace.gc_events();
+            let gc_data = if !gc_events.is_empty() {
+                let mut gc_boxes = Vec::with_capacity(gc_events.len());
+                for &event_time in gc_events {
+                    gc_boxes.push(GCBox {
+                        time: encode_time(event_time),
+                    });
+                }
+                if !gc_boxes.is_empty() {
+                    let (allocation_id, slot) = self.gc_vertex.alloc(gc_boxes.len());
+                    slot.copy_from_slice(&gc_boxes);
+                    Some(allocation_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let end_time = trace.end_time();
             let max_depth = trace.max_depth();
             self.thread_queue.push(Reverse(TraceBatch {
                 end_time,
                 max_depth,
                 thread_data: allocation_ids,
+                gc_data,
             }));
             self.base_time = self.base_time.max(end_time);
             self.depth.insert(max_depth);
@@ -424,6 +560,7 @@ impl Renderer {
             let Reverse(TraceBatch {
                 thread_data,
                 max_depth,
+                gc_data,
                 ..
             }) = self.thread_queue.pop().unwrap();
             self.depth.remove(max_depth);
@@ -440,6 +577,9 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            if let Some(gc_allocation_id) = gc_data {
+                self.gc_vertex.dealloc(gc_allocation_id);
             }
         }
         updated
@@ -534,6 +674,18 @@ impl Renderer {
                     render_pass.draw_indexed(0..num_indices, 0, 0..len as u32);
                 });
             }
+
+            render_pass.set_pipeline(&state.gc_pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[0]);
+            self.gc_vertex.sync();
+            self.gc_vertex.read_buffers(|buffer, len| {
+                if len == 0 {
+                    return;
+                }
+                render_pass.set_vertex_buffer(0, self.gc_vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, buffer.slice(..));
+                render_pass.draw(0..4, 0..len as u32);
+            });
         }
 
         self.queue.submit(iter::once(encoder.finish()));
