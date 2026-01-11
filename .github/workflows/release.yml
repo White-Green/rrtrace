@@ -1,0 +1,89 @@
+name: Build and Release
+
+on: push
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(ruby -Ilib -r rrtrace/version -e 'puts Rrtrace::VERSION')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build native gem
+        run: bundle exec rake native gem
+
+      - name: Build source gem
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          gem build rrtrace.gemspec
+          mkdir -p pkg
+          mv rrtrace-${{ steps.get_version.outputs.version }}.gem pkg/
+
+      - name: Publish to RubyGems
+        if: github.ref_name == github.event.repository.default_branch
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        shell: bash
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          
+          if [ -z "$GEM_HOST_API_KEY" ]; then
+            echo "GEM_HOST_API_KEY is not set. Skipping publish."
+            exit 1
+          fi
+
+          # Setup credentials
+          mkdir -p ~/.gem
+          echo "---" > ~/.gem/credentials
+          echo ":rubygems_api_key: $GEM_HOST_API_KEY" >> ~/.gem/credentials
+          chmod 0600 ~/.gem/credentials
+
+          # Fetch published versions from RubyGems API
+          echo "Fetching published versions for rrtrace..."
+          PUBLISHED_VERSIONS=$(curl -s https://rubygems.org/api/v1/versions/rrtrace.json)
+          if ! echo "$PUBLISHED_VERSIONS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            PUBLISHED_VERSIONS="[]"
+          fi
+
+          for gem_file in pkg/*.gem; do
+            if [ ! -f "$gem_file" ]; then continue; fi
+            GEM_FILENAME=$(basename $gem_file)
+            # Determine platform from filename
+            # rrtrace-0.1.0.gem -> platform: ruby
+            # rrtrace-0.1.0-x86_64-linux.gem -> platform: x86_64-linux
+            # Note: sed expression might need to be robust against version strings
+            PLATFORM=$(echo $GEM_FILENAME | sed -E "s/rrtrace-$VERSION-?//; s/\.gem$//")
+            if [ -z "$PLATFORM" ]; then PLATFORM="ruby"; fi
+            
+            echo "Checking if $GEM_FILENAME (platform: $PLATFORM) is already published..."
+            
+            # Check if this specific version and platform exists using RubyGems API
+            if echo "$PUBLISHED_VERSIONS" | jq -e ".[] | select(.number == \"$VERSION\" and .platform == \"$PLATFORM\")" > /dev/null 2>&1; then
+              echo "$GEM_FILENAME is already published. Skipping."
+            else
+              echo "Publishing $GEM_FILENAME..."
+              gem push $gem_file || echo "Failed to push $gem_file (it might already exist on the server)"
+            fi
+          done
