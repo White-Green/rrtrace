@@ -12,7 +12,7 @@ pub struct CallBox {
     depth: u32,
 }
 
-pub const VISIBLE_DURATION: u64 = 1_000_000_000 * 30;
+pub const VISIBLE_DURATION: u64 = 1_000_000_000 * 5;
 
 pub fn encode_time(time: u64) -> [u32; 2] {
     [
