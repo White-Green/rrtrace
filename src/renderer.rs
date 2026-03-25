@@ -80,13 +80,11 @@ impl GCBox {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GCBox>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Uint32x2,
-                },
-            ],
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Uint32x2,
+            }],
         }
     }
 }
@@ -510,14 +508,17 @@ impl Renderer {
             updated = true;
             let mut allocation_ids = Vec::new();
             for (thread_id, call_box) in trace.data() {
-                let s = self.data_per_thread.entry(thread_id).or_insert_with(|| ThreadArena {
-                    used_segments: 0,
-                    vertex: VertexArena::new(
-                        self.device.clone(),
-                        self.queue.clone(),
-                        BufferUsages::COPY_DST | BufferUsages::VERTEX,
-                    ),
-                });
+                let s = self
+                    .data_per_thread
+                    .entry(thread_id)
+                    .or_insert_with(|| ThreadArena {
+                        used_segments: 0,
+                        vertex: VertexArena::new(
+                            self.device.clone(),
+                            self.queue.clone(),
+                            BufferUsages::COPY_DST | BufferUsages::VERTEX,
+                        ),
+                    });
                 s.used_segments += 1;
                 let (allocation_id, slot) = s.vertex.alloc(call_box.len());
                 slot.copy_from_slice(call_box);

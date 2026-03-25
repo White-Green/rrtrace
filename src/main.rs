@@ -1,15 +1,17 @@
+use crate::object_scatter::ObjectScatter;
 use crate::renderer::Renderer;
 use crate::ringbuffer::{EventRingBuffer, RRTraceEvent};
-use crate::trace_state::{FastTrace, SlowTrace, VISIBLE_DURATION};
+use crate::trace_state::{FastTrace, SlowTrace};
 use std::ffi::CString;
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, atomic};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
 use winit::event::*;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
+mod object_scatter;
 mod renderer;
 mod ringbuffer;
 #[cfg_attr(unix, path = "shm_unix.rs")]
@@ -167,30 +169,37 @@ fn trace_thread(
     result_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {
-        static LATEST_END_TIME: AtomicU64 = AtomicU64::new(0);
+        let slow_trace_threads = thread::available_parallelism()
+            .map_or(0, NonZeroUsize::get)
+            .saturating_sub(2)
+            .max(1);
+        let (mut sender, receiver) =
+            ObjectScatter::<(u64, FastTrace, Vec<RRTraceEvent>)>::new(slow_trace_threads);
+        receiver.enumerate().for_each(|(i, mut receiver)| {
+            let result_queue = Arc::clone(&result_queue);
+            thread::Builder::new()
+                .name(format!("slow_trace_thread_{}", i))
+                .spawn(move || {
+                    loop {
+                        let Some(data) = receiver.receive() else {
+                            continue;
+                        };
+                        let (start_time, fast_trace, events) = *data;
+                        let trace = SlowTrace::trace(start_time, fast_trace, &events);
+                        result_queue.push(trace);
+                    }
+                })
+                .unwrap();
+        });
         let mut start_time = 0u64;
         let mut fast_trace = FastTrace::new();
         loop {
             let Some(events) = event_queue.pop() else {
                 continue;
             };
-            rayon_core::spawn({
-                let fast_trace = fast_trace.clone();
-                let events = events.clone();
-                let result_queue = result_queue.clone();
-                move || {
-                    if start_time + VISIBLE_DURATION
-                        < LATEST_END_TIME.load(atomic::Ordering::Relaxed)
-                    {
-                        return;
-                    }
-                    let slow_trace = SlowTrace::trace(start_time, fast_trace, &events);
-                    result_queue.push(slow_trace);
-                }
-            });
+            sender.send((start_time, fast_trace.clone(), events.clone()));
             fast_trace.process_events(&events);
             let end_time = events.last().unwrap().timestamp();
-            LATEST_END_TIME.store(end_time, atomic::Ordering::Relaxed);
             start_time = end_time;
         }
     }
