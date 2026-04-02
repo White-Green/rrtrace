@@ -143,7 +143,7 @@ async fn init_gpu() -> (wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue
 
 fn queue_pipe_thread(
     shm_name: String,
-    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRTraceEvent>>>,
+    event_queue: Arc<crossbeam_queue::SegQueue<Arc<[RRTraceEvent]>>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let shm = unsafe {
@@ -157,15 +157,13 @@ fn queue_pipe_thread(
         loop {
             let count = ringbuffer.read(&mut buffer);
             if count > 0 {
-                buffer.truncate(count);
-                event_queue.push(buffer.clone());
-                buffer.resize_with(65536, Default::default);
+                event_queue.push(Arc::from(&buffer[..count]));
             }
         }
     }
 }
 fn trace_thread(
-    event_queue: Arc<crossbeam_queue::SegQueue<Vec<RRTraceEvent>>>,
+    event_queue: Arc<crossbeam_queue::SegQueue<Arc<[RRTraceEvent]>>>,
     result_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {
@@ -174,16 +172,14 @@ fn trace_thread(
             .saturating_sub(2)
             .max(1);
         let (mut sender, receiver) =
-            ObjectScatter::<(u64, FastTrace, Vec<RRTraceEvent>)>::new(slow_trace_threads);
+            ObjectScatter::<(u64, FastTrace, Arc<[RRTraceEvent]>)>::new(slow_trace_threads);
         receiver.enumerate().for_each(|(i, mut receiver)| {
             let result_queue = Arc::clone(&result_queue);
             thread::Builder::new()
                 .name(format!("slow_trace_thread_{}", i))
                 .spawn(move || {
                     loop {
-                        let Some(data) = receiver.receive() else {
-                            continue;
-                        };
+                        let data = receiver.receive();
                         let (start_time, fast_trace, events) = *data;
                         let trace = SlowTrace::trace(start_time, fast_trace, &events);
                         result_queue.push(trace);
@@ -197,7 +193,7 @@ fn trace_thread(
             let Some(events) = event_queue.pop() else {
                 continue;
             };
-            sender.send((start_time, fast_trace.clone(), events.clone()));
+            sender.send((start_time, fast_trace.clone(), Arc::clone(&events)));
             fast_trace.process_events(&events);
             let end_time = events.last().unwrap().timestamp();
             start_time = end_time;

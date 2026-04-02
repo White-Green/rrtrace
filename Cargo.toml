@@ -7,9 +7,9 @@ edition = "2024"
 overflow-checks = true
 
 [dependencies]
+atomic-wait = "1.1.0"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 crossbeam-queue = "0.3.12"
-crossbeam-utils = "0.8.12"
 glam = "0.30.9"
 pollster = "0.4.0"
 smallvec = "1.15.1"
