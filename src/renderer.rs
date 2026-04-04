@@ -1,3 +1,4 @@
+use crate::BASE_TIME;
 use crate::renderer::vertex_arena::{AllocationId, VertexArena};
 use crate::trace_state::{CallBox, SlowTrace, VISIBLE_DURATION, encode_time};
 use glam::{Mat4, Vec3};
@@ -6,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt, iter};
 use wgpu::BufferUsages;
 use wgpu::util::DeviceExt;
@@ -552,9 +554,9 @@ impl Renderer {
                 thread_data: allocation_ids,
                 gc_data,
             }));
-            self.base_time = self.base_time.max(end_time);
             self.depth.insert(max_depth);
         }
+        self.base_time = (Instant::now() - *BASE_TIME.get().unwrap()).as_nanos() as u64;
         while let Some(Reverse(TraceBatch { end_time, .. })) = self.thread_queue.peek()
             && end_time + VISIBLE_DURATION < self.base_time
         {

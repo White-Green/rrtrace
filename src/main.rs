@@ -4,7 +4,8 @@ use crate::ringbuffer::{EventRingBuffer, RRTraceEvent};
 use crate::trace_state::{FastTrace, SlowTrace};
 use std::ffi::CString;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
 use winit::event::*;
@@ -79,14 +80,17 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        let updated = self.renderer.sync();
-        if updated && let Some(window) = self.window.as_ref() {
+        self.renderer.sync();
+        if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
     }
 }
 
+static BASE_TIME: OnceLock<Instant> = OnceLock::new();
+
 fn main() {
+    BASE_TIME.set(Instant::now()).unwrap();
     assert_eq!(env::args().len(), 2, "Usage: rrtrace <shm_name>");
     let shm_name = env::args().nth(1).unwrap();
 
