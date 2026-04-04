@@ -163,6 +163,7 @@ Init_rrtrace(void)
   fprintf(context->log, "Visualizer: %s\n", visualizer_path);
   fprintf(context->log, "Shared Memory: %s\n", shm_name);
 #endif
+  init_base_timestamp();
   process_id pid = spawn_process(visualizer_path, (char * const[]){visualizer_path, shm_name, NULL});
   if (pid == 0) {
     rb_raise(rb_eRuntimeError, "Failed to spawn visualizer process");

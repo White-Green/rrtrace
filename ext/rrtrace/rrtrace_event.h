@@ -22,18 +22,20 @@ typedef struct {
     uint64_t data;
 } RRTraceEvent;
 
+static uint64_t rrtrace_base_timestamp = 0;
+
+static inline void init_base_timestamp(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    rrtrace_base_timestamp = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 static inline uint64_t now(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     uint64_t timestamp = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 
-    static atomic_uint_fast64_t base_timestamp = 0;
-    uint64_t expected = 0;
-    if (atomic_compare_exchange_strong_explicit(&base_timestamp, &expected, timestamp, memory_order_relaxed, memory_order_relaxed)) {
-        return 0;
-    } else {
-        return timestamp - expected;
-    }
+    return timestamp - rrtrace_base_timestamp;
 }
 
 static inline RRTraceEvent event_call(uint64_t method_id) {
