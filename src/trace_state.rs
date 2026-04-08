@@ -1,7 +1,9 @@
 use crate::ringbuffer::{RRTraceEvent, RRTraceEventType};
 use smallvec::SmallVec;
-use std::convert;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Debug;
+use std::{convert, iter, mem};
 
 #[repr(C)]
 #[derive(Copy, Default, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -21,61 +23,112 @@ pub fn encode_time(time: u64) -> [u32; 2] {
     ]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThreadId {
+    None,
+    Initial,
+    Id(u32),
+}
+
+#[derive(Debug, Clone, Default)]
+struct StackState {
+    unmarked_returns: SmallVec<[u64; 2]>,
+    stack: SmallVec<[u64; 16]>,
+    exited: bool,
+}
+
+impl StackState {
+    fn new() -> StackState {
+        StackState::default()
+    }
+
+    #[inline(always)]
+    fn call(&mut self, method_id: u64) {
+        self.stack.push(method_id);
+    }
+
+    #[inline(always)]
+    fn ret(&mut self, method_id: u64) {
+        loop {
+            match self.stack.pop() {
+                None => {
+                    self.unmarked_returns.push(method_id);
+                    break;
+                }
+                Some(m) if m == method_id => break,
+                Some(_) => {}
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn exit(&mut self) {
+        self.exited = true;
+    }
+
+    fn drop_unmarked_returns(&mut self) {
+        self.unmarked_returns.clear();
+    }
+
+    fn merge_into(&self, other: &mut Self) {
+        let additional_push_stack = mem::replace(&mut other.stack, self.stack.clone());
+        let unmarked_returns =
+            mem::replace(&mut other.unmarked_returns, self.unmarked_returns.clone());
+        for method_id in unmarked_returns {
+            other.ret(method_id);
+        }
+        for method_id in additional_push_stack {
+            other.call(method_id);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FastTrace {
-    thread_stacks: SmallVec<[(u32, SmallVec<[u64; 4]>); 1]>,
-    current_thread: u32,
+    thread_stacks: HashMap<u32, StackState>,
+    initial_thread_stack: StackState,
+    current_thread: ThreadId,
     in_gc: bool,
 }
 
-impl FastTrace {
-    pub fn new() -> FastTrace {
+impl Default for FastTrace {
+    fn default() -> Self {
         FastTrace {
-            thread_stacks: smallvec::smallvec![(0, SmallVec::new())],
-            current_thread: 0,
+            thread_stacks: HashMap::new(),
+            initial_thread_stack: StackState::new(),
+            current_thread: ThreadId::Id(0),
             in_gc: false,
         }
     }
-    pub fn process_events(&mut self, events: &[RRTraceEvent]) {
+}
+
+impl FastTrace {
+    pub fn from_events(events: &[RRTraceEvent]) -> FastTrace {
+        let mut thread_stacks = HashMap::<u32, StackState>::new();
+        let mut initial_thread_stack = StackState::new();
+        let mut current_thread = ThreadId::Initial;
+
+        let mut current_thread_stack = &mut initial_thread_stack;
         for &event in events {
             match event.event_type() {
                 RRTraceEventType::Call => {
                     let method_id = event.data();
-                    self.thread_stacks[self.current_thread as usize]
-                        .1
-                        .push(method_id);
+                    current_thread_stack.call(method_id);
                 }
                 RRTraceEventType::Return => {
                     let method_id = event.data();
-                    let stack = &mut self.thread_stacks[self.current_thread as usize].1;
-                    while stack.pop().is_some_and(|m| m != method_id) {}
+                    current_thread_stack.ret(method_id);
                 }
                 RRTraceEventType::ThreadSuspended => {
-                    self.current_thread = u32::MAX;
+                    current_thread = ThreadId::None;
                 }
                 RRTraceEventType::ThreadResume => {
                     let thread_id = event.data() as u32;
-                    let index = match self
-                        .thread_stacks
-                        .binary_search_by_key(&thread_id, |&(thread_id, _)| thread_id)
-                    {
-                        Ok(index) => index,
-                        Err(index) => {
-                            self.thread_stacks
-                                .insert(index, (thread_id, SmallVec::new()));
-                            index
-                        }
-                    };
-                    self.current_thread = index as u32;
+                    current_thread = ThreadId::Id(thread_id);
+                    current_thread_stack = thread_stacks.entry(thread_id).or_default();
                 }
                 RRTraceEventType::ThreadExit => {
-                    let thread_id = event.data() as u32;
-                    if let Ok(index) = self
-                        .thread_stacks
-                        .binary_search_by_key(&thread_id, |&(thread_id, _)| thread_id)
-                    {
-                        self.thread_stacks.remove(index);
-                    };
+                    current_thread_stack.exit();
                 }
                 RRTraceEventType::GCStart
                 | RRTraceEventType::GCEnd
@@ -83,7 +136,70 @@ impl FastTrace {
                 | RRTraceEventType::ThreadReady => {}
             }
         }
-        self.in_gc = events.last().unwrap().event_type() == RRTraceEventType::GCStart;
+        let in_gc = events.last().unwrap().event_type() == RRTraceEventType::GCStart;
+        FastTrace {
+            thread_stacks,
+            initial_thread_stack,
+            current_thread,
+            in_gc,
+        }
+    }
+
+    pub fn mark_as_first(&mut self) {
+        self.thread_stacks
+            .values_mut()
+            .chain(iter::once(&mut self.initial_thread_stack))
+            .for_each(StackState::drop_unmarked_returns);
+        if let ThreadId::Initial = self.current_thread {
+            self.current_thread = ThreadId::Id(0);
+        }
+        let initial_thread_stack = mem::take(&mut self.initial_thread_stack);
+        match self.thread_stacks.entry(0) {
+            Entry::Occupied(mut entry) => {
+                initial_thread_stack.merge_into(entry.get_mut());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(initial_thread_stack);
+            }
+        }
+    }
+
+    pub fn merge_into(&self, other: &mut Self) {
+        match self.current_thread {
+            ThreadId::Id(id) => {
+                let initial_thread_stack = mem::replace(
+                    &mut other.initial_thread_stack,
+                    self.initial_thread_stack.clone(),
+                );
+                match other.thread_stacks.entry(id) {
+                    Entry::Occupied(mut entry) => {
+                        initial_thread_stack.merge_into(entry.get_mut());
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(initial_thread_stack);
+                    }
+                }
+            }
+            ThreadId::Initial => {
+                self.initial_thread_stack
+                    .merge_into(&mut other.initial_thread_stack);
+            }
+            ThreadId::None => {}
+        }
+        if let ThreadId::Initial = other.current_thread {
+            other.current_thread = self.current_thread;
+        }
+        self.thread_stacks.iter().for_each(|(&thread_id, stack)| {
+            match other.thread_stacks.entry(thread_id) {
+                Entry::Occupied(mut entry) => {
+                    stack.merge_into(entry.get_mut());
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(stack.clone());
+                }
+            }
+        });
+        other.thread_stacks.retain(|_, stack| !stack.exited);
     }
 }
 
@@ -101,23 +217,30 @@ pub struct SlowTrace {
 }
 
 impl SlowTrace {
-    pub fn trace(start_time: u64, fast_trace: FastTrace, events: &[RRTraceEvent]) -> SlowTrace {
+    pub fn trace(start_time: u64, fast_trace: &FastTrace, events: &[RRTraceEvent]) -> SlowTrace {
         let end_time = events.last().unwrap().timestamp();
         let mut max_depth = 0;
-        let FastTrace {
-            thread_stacks,
+        let &FastTrace {
+            ref thread_stacks,
+            initial_thread_stack: _,
             current_thread,
             in_gc,
         } = fast_trace;
+        let current_thread = match current_thread {
+            ThreadId::None => u32::MAX,
+            ThreadId::Initial => unreachable!(),
+            ThreadId::Id(id) => id,
+        };
         let mut gc_events = Vec::new();
         let mut call_stack = thread_stacks
-            .into_iter()
-            .map(|(thread_id, stack)| {
+            .iter()
+            .map(|(&thread_id, stack)| {
                 (
                     thread_id,
                     stack
-                        .into_iter()
-                        .map(|method_id| CallStackEntry {
+                        .stack
+                        .iter()
+                        .map(|&method_id| CallStackEntry {
                             method_id,
                             vertex_index: usize::MAX,
                         })

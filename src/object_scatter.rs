@@ -103,24 +103,21 @@ impl<T> Drop for ObjectScatter<T> {
 }
 
 impl<T: Send> ObjectScatterReceiver<T> {
-    pub fn receive(&mut self) -> Box<T> {
+    pub fn try_receive(&mut self) -> Option<Box<T>> {
         let line = &self.array[self.slot];
-        loop {
-            let before = line.waiter().load(atomic::Ordering::Relaxed);
-            for _ in 0..15 {
-                let index = self.index;
-                let ptr = line
-                    .get(index)
-                    .swap(ptr::null_mut(), atomic::Ordering::Acquire);
-                self.index = self.index + 1;
-                if self.index >= 15 {
-                    self.index = 0;
-                }
-                if !ptr.is_null() {
-                    return unsafe { Box::from_raw(ptr) };
-                }
+        for _ in 0..15 {
+            let index = self.index;
+            let ptr = line
+                .get(index)
+                .swap(ptr::null_mut(), atomic::Ordering::Acquire);
+            self.index = self.index + 1;
+            if self.index >= 15 {
+                self.index = 0;
             }
-            atomic_wait::wait(line.waiter(), before);
+            if !ptr.is_null() {
+                return unsafe { Some(Box::from_raw(ptr)) };
+            }
         }
+        None
     }
 }

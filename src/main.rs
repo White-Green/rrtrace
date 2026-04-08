@@ -2,9 +2,11 @@ use crate::object_scatter::ObjectScatter;
 use crate::renderer::Renderer;
 use crate::ringbuffer::{EventRingBuffer, RRTraceEvent};
 use crate::trace_state::{FastTrace, SlowTrace};
+use crate::universal_notifier::UniversalNotifier;
 use std::ffi::CString;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, OnceLock};
+use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::Instant;
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
@@ -19,6 +21,7 @@ mod ringbuffer;
 #[cfg_attr(windows, path = "shm_windows.rs")]
 mod shm;
 mod trace_state;
+mod universal_notifier;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -171,35 +174,92 @@ fn trace_thread(
     result_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
 ) -> impl FnOnce() + Send + 'static {
     move || {
-        let slow_trace_threads = thread::available_parallelism()
+        let parallel_trace_threads = thread::available_parallelism()
             .map_or(0, NonZeroUsize::get)
             .saturating_sub(2)
             .max(1);
-        let (mut sender, receiver) =
-            ObjectScatter::<(u64, FastTrace, Arc<[RRTraceEvent]>)>::new(slow_trace_threads);
-        receiver.enumerate().for_each(|(i, mut receiver)| {
-            let result_queue = Arc::clone(&result_queue);
-            thread::Builder::new()
-                .name(format!("slow_trace_thread_{}", i))
-                .spawn(move || {
-                    loop {
-                        let data = receiver.receive();
-                        let (start_time, fast_trace, events) = *data;
-                        let trace = SlowTrace::trace(start_time, fast_trace, &events);
-                        result_queue.push(trace);
-                    }
-                })
-                .unwrap();
-        });
+
+        let universal_notifier = UniversalNotifier::new();
+        let (second_stage_sender, second_stage_receivers) =
+            ObjectScatter::<(u64, Arc<FastTrace>, Arc<[RRTraceEvent]>)>::new(
+                parallel_trace_threads,
+            );
+        struct Persistent {
+            second_trace_sender: ObjectScatter<(u64, Arc<FastTrace>, Arc<[RRTraceEvent]>)>,
+            trace: Option<Arc<FastTrace>>,
+        }
+        let first_stage_event_queue = Arc::new(crossbeam_queue::SegQueue::<(
+            Receiver<Persistent>,
+            SyncSender<Persistent>,
+            u64,
+            Arc<[RRTraceEvent]>,
+        )>::new());
+        second_stage_receivers
+            .enumerate()
+            .for_each(|(i, mut second_stage_receiver)| {
+                let universal_notifier = universal_notifier.clone();
+                let first_stage_event_queue = Arc::clone(&first_stage_event_queue);
+                let result_queue = Arc::clone(&result_queue);
+                thread::Builder::new()
+                    .name(format!("slow_trace_thread_{}", i))
+                    .spawn(move || {
+                        loop {
+                            let v = universal_notifier.value();
+                            if let Some((receiver, sender, start_time, events)) =
+                                first_stage_event_queue.pop()
+                            {
+                                let mut trace = FastTrace::from_events(&events);
+                                let mut persistent = receiver.recv().unwrap();
+                                let t = persistent
+                                    .trace
+                                    .as_ref()
+                                    .map_or_else(|| Arc::new(FastTrace::default()), Arc::clone);
+                                persistent.second_trace_sender.send((start_time, t, events));
+                                match &persistent.trace {
+                                    None => trace.mark_as_first(),
+                                    Some(t) => t.merge_into(&mut trace),
+                                }
+                                let trace = Arc::new(trace);
+                                sender
+                                    .send(Persistent {
+                                        trace: Some(trace),
+                                        ..persistent
+                                    })
+                                    .unwrap();
+                                universal_notifier.notify();
+                                continue;
+                            }
+                            if let Some(data) = second_stage_receiver.try_receive() {
+                                let (start_time, fast_trace, events) = *data;
+                                let trace = SlowTrace::trace(start_time, &fast_trace, &events);
+                                result_queue.push(trace);
+                                continue;
+                            }
+                            universal_notifier.wait(v);
+                        }
+                    })
+                    .unwrap();
+            });
         let mut start_time = 0u64;
-        let mut fast_trace = FastTrace::new();
+        let (s, mut receiver) = mpsc::sync_channel(1);
+        s.send(Persistent {
+            second_trace_sender: second_stage_sender,
+            trace: None,
+        })
+        .unwrap();
         loop {
             let Some(events) = event_queue.pop() else {
                 continue;
             };
-            sender.send((start_time, fast_trace.clone(), Arc::clone(&events)));
-            fast_trace.process_events(&events);
             let end_time = events.last().unwrap().timestamp();
+            let (sender, r) = mpsc::sync_channel(1);
+            first_stage_event_queue.push((
+                mem::replace(&mut receiver, r),
+                sender,
+                start_time,
+                events,
+            ));
+            universal_notifier.notify();
             start_time = end_time;
         }
     }
