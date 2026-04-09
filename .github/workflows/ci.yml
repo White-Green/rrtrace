@@ -1,0 +1,94 @@
+name: CI
+
+on: push
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) }}
+
+      - uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-clippy-', runner.os) }}
+
+      - run: cargo fetch --locked
+
+      - run: cargo clippy --tests -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) }}
+
+      - uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-test-', runner.os) }}
+
+      - run: cargo fetch --locked
+
+      - run: cargo test --locked
+
+  taplo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: latest-taplo-version
+        run: |
+          V=$(curl https://index.crates.io/ta/pl/taplo-cli | jq -r 'select(.yanked == false) | .vers' | grep --extended-regexp '^[0-9]+\.[0-9]+\.[0-9]+$' | sort --reverse --version-sort | head --lines=1)
+          echo "Latest version of taplo-cli: $V"
+          echo "version=$V" >> $GITHUB_OUTPUT
+
+      - id: taplo-bin-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/taplo
+          key: ${{ runner.os }}-taplo-cli-${{ steps.latest-taplo-version.outputs.version }}
+
+      - if: steps.taplo-bin-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: steps.taplo-bin-cache.outputs.cache-hit != 'true'
+        run: cargo install taplo-cli@${{ steps.latest-taplo-version.outputs.version }} --locked
+
+      - run: ~/.cargo/bin/taplo fmt --check
