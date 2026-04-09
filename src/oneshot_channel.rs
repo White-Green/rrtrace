@@ -8,6 +8,9 @@ struct OneshotSlot<T> {
     initialized: AtomicBool,
 }
 
+unsafe impl<T: Send> Send for OneshotSlot<T> {}
+unsafe impl<T: Sync> Sync for OneshotSlot<T> {}
+
 impl<T> Drop for OneshotSlot<T> {
     fn drop(&mut self) {
         if *self.initialized.get_mut() {
@@ -22,8 +25,6 @@ pub struct OneshotSender<T> {
     slot: Arc<OneshotSlot<T>>,
 }
 
-unsafe impl<T: Send> Send for OneshotSender<T> {}
-
 impl<T> OneshotSender<T> {
     #[inline(always)]
     pub fn send(self, value: T) {
@@ -37,8 +38,6 @@ impl<T> OneshotSender<T> {
 pub struct OneshotReceiver<T> {
     slot: Arc<OneshotSlot<T>>,
 }
-
-unsafe impl<T: Send> Send for OneshotReceiver<T> {}
 
 impl<T> OneshotReceiver<T> {
     #[inline(always)]
