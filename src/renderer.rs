@@ -1,3 +1,4 @@
+use crate::BASE_TIME;
 use crate::renderer::vertex_arena::{AllocationId, VertexArena};
 use crate::trace_state::{CallBox, SlowTrace, VISIBLE_DURATION, encode_time};
 use glam::{Mat4, Vec3};
@@ -6,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt, iter};
 use wgpu::BufferUsages;
 use wgpu::util::DeviceExt;
@@ -80,13 +82,11 @@ impl GCBox {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GCBox>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Uint32x2,
-                },
-            ],
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Uint32x2,
+            }],
         }
     }
 }
@@ -494,13 +494,14 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if let Some(state) = &mut self.surface_state {
-            if new_size.width > 0 && new_size.height > 0 {
-                state.config.width = new_size.width;
-                state.config.height = new_size.height;
-                state.surface.configure(&self.device, &state.config);
-                state.depth_texture = Self::create_depth_texture(&self.device, &state.config);
-            }
+        if let Some(state) = &mut self.surface_state
+            && new_size.width > 0
+            && new_size.height > 0
+        {
+            state.config.width = new_size.width;
+            state.config.height = new_size.height;
+            state.surface.configure(&self.device, &state.config);
+            state.depth_texture = Self::create_depth_texture(&self.device, &state.config);
         }
     }
 
@@ -510,14 +511,17 @@ impl Renderer {
             updated = true;
             let mut allocation_ids = Vec::new();
             for (thread_id, call_box) in trace.data() {
-                let s = self.data_per_thread.entry(thread_id).or_insert_with(|| ThreadArena {
-                    used_segments: 0,
-                    vertex: VertexArena::new(
-                        self.device.clone(),
-                        self.queue.clone(),
-                        BufferUsages::COPY_DST | BufferUsages::VERTEX,
-                    ),
-                });
+                let s = self
+                    .data_per_thread
+                    .entry(thread_id)
+                    .or_insert_with(|| ThreadArena {
+                        used_segments: 0,
+                        vertex: VertexArena::new(
+                            self.device.clone(),
+                            self.queue.clone(),
+                            BufferUsages::COPY_DST | BufferUsages::VERTEX,
+                        ),
+                    });
                 s.used_segments += 1;
                 let (allocation_id, slot) = s.vertex.alloc(call_box.len());
                 slot.copy_from_slice(call_box);
@@ -551,9 +555,9 @@ impl Renderer {
                 thread_data: allocation_ids,
                 gc_data,
             }));
-            self.base_time = self.base_time.max(end_time);
             self.depth.insert(max_depth);
         }
+        self.base_time = (Instant::now() - *BASE_TIME.get().unwrap()).as_nanos() as u64;
         while let Some(Reverse(TraceBatch { end_time, .. })) = self.thread_queue.peek()
             && end_time + VISIBLE_DURATION < self.base_time
         {
@@ -732,15 +736,12 @@ where
     }
 
     fn remove(&mut self, value: T) {
-        match self.inner.entry(value) {
-            Entry::Vacant(_) => return,
-            Entry::Occupied(mut entry) => {
-                let count = entry.get_mut();
-                if *count <= 1 {
-                    entry.remove();
-                } else {
-                    *count -= 1;
-                }
+        if let Entry::Occupied(mut entry) = self.inner.entry(value) {
+            let count = entry.get_mut();
+            if *count <= 1 {
+                entry.remove();
+            } else {
+                *count -= 1;
             }
         }
     }

@@ -1,8 +1,11 @@
 [tools]
-ruby = "4.0.0"
+ruby = "4.0"
 
 [tasks.setup]
 run = "bundle install"
 
 [tasks.build]
-run = "bundle exec rake build"
+run = """
+rm -rf tmp
+bundle exec rake build
+"""
