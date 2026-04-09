@@ -16,6 +16,7 @@
 !/Rakefile
 !/README.md
 !/rrtrace.gemspec
+!/taplo.toml
 
 *.so
 *.bundle
