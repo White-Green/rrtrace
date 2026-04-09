@@ -1,18 +1,16 @@
-use std::sync::atomic::{AtomicPtr, AtomicU32};
+use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, atomic};
-use std::{iter, ptr};
+use std::{iter, marker::PhantomData, ptr, rc::Rc};
 
 #[repr(align(128))]
 struct Line<T> {
-    array: [AtomicPtr<T>; 15],
-    waiter: AtomicU32,
+    array: [AtomicPtr<T>; 16],
 }
 
 impl<T> Line<T> {
     fn new() -> Line<T> {
         Line {
-            array: [const { AtomicPtr::new(ptr::null_mut()) }; 15],
-            waiter: AtomicU32::new(0),
+            array: [const { AtomicPtr::new(ptr::null_mut()) }; 16],
         }
     }
 
@@ -20,20 +18,25 @@ impl<T> Line<T> {
     fn get(&self, index: usize) -> &AtomicPtr<T> {
         &self.array[index]
     }
+}
 
-    #[inline(always)]
-    fn waiter(&self) -> &AtomicU32 {
-        &self.waiter
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &AtomicPtr<T>> {
-        self.array.iter()
+impl<T> Drop for Line<T> {
+    fn drop(&mut self) {
+        self.array.iter_mut().for_each(|ptr| {
+            let ptr = ptr.get_mut();
+            if !ptr.is_null() {
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
+            }
+        })
     }
 }
 
 pub struct ObjectScatter<T> {
     array: Arc<[Line<T>]>,
     index: usize,
+    _not_send: PhantomData<Rc<()>>,
 }
 
 pub struct ObjectScatterReceiver<T> {
@@ -56,6 +59,7 @@ impl<T: Send> ObjectScatter<T> {
         let scatter = ObjectScatter {
             array: Arc::clone(&array),
             index: 0,
+            _not_send: PhantomData,
         };
         let receiver_iter = (0..count).map(move |slot| ObjectScatterReceiver {
             array: Arc::clone(&array),
@@ -72,46 +76,29 @@ impl<T: Send> ObjectScatter<T> {
         let slot = i % self.array.len();
         let index = i / self.array.len();
         let line = &self.array[slot];
-        let old_ptr = line.get(index).swap(ptr, atomic::Ordering::AcqRel);
-        atomic_wait::wake_one(line.waiter());
+        let old_ptr = line.get(index).swap(ptr, atomic::Ordering::Release);
         if !old_ptr.is_null() {
             unsafe {
                 drop(Box::from_raw(old_ptr));
             }
         }
         self.index += 1;
-        if self.index >= self.array.len() * 15 {
+        if self.index >= self.array.len() * 16 {
             self.index = 0;
         }
-    }
-}
-
-impl<T> Drop for ObjectScatter<T> {
-    fn drop(&mut self) {
-        self.array
-            .iter()
-            .flat_map(|array| array.iter())
-            .for_each(|ptr| {
-                let ptr = ptr.swap(ptr::null_mut(), atomic::Ordering::Acquire);
-                if !ptr.is_null() {
-                    unsafe {
-                        drop(Box::from_raw(ptr));
-                    }
-                }
-            });
     }
 }
 
 impl<T: Send> ObjectScatterReceiver<T> {
     pub fn try_receive(&mut self) -> Option<Box<T>> {
         let line = &self.array[self.slot];
-        for _ in 0..15 {
+        for _ in 0..16 {
             let index = self.index;
             let ptr = line
                 .get(index)
                 .swap(ptr::null_mut(), atomic::Ordering::Acquire);
             self.index += 1;
-            if self.index >= 15 {
+            if self.index >= 16 {
                 self.index = 0;
             }
             if !ptr.is_null() {
