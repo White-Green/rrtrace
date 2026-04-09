@@ -10,7 +10,7 @@ struct OneshotSlot<T> {
 
 impl<T> Drop for OneshotSlot<T> {
     fn drop(&mut self) {
-        if self.initialized.load(atomic::Ordering::Acquire) {
+        if *self.initialized.get_mut() {
             unsafe {
                 self.value.get_mut().assume_init_drop();
             }
@@ -49,7 +49,7 @@ impl<T> OneshotReceiver<T> {
             .compare_exchange(
                 true,
                 false,
-                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
                 atomic::Ordering::Relaxed,
             )
             .is_ok()
