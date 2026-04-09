@@ -79,7 +79,7 @@ impl<T: Send> ObjectScatter<T> {
                 drop(Box::from_raw(old_ptr));
             }
         }
-        self.index = self.index + 1;
+        self.index += 1;
         if self.index >= self.array.len() * 15 {
             self.index = 0;
         }
@@ -110,7 +110,7 @@ impl<T: Send> ObjectScatterReceiver<T> {
             let ptr = line
                 .get(index)
                 .swap(ptr::null_mut(), atomic::Ordering::Acquire);
-            self.index = self.index + 1;
+            self.index += 1;
             if self.index >= 15 {
                 self.index = 0;
             }

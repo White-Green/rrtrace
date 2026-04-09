@@ -57,20 +57,20 @@ impl FreeList {
         let mut start = range.start;
         let mut end = range.end;
 
-        if let Some((&next_start, &next_end)) = self.by_start.range(end..).next() {
-            if next_start == end {
-                self.by_size.remove(&(next_end - next_start, next_start));
-                self.by_start.remove(&next_start);
-                end = next_end;
-            }
+        if let Some((&next_start, &next_end)) = self.by_start.range(end..).next()
+            && next_start == end
+        {
+            self.by_size.remove(&(next_end - next_start, next_start));
+            self.by_start.remove(&next_start);
+            end = next_end;
         }
 
-        if let Some((&prev_start, &prev_end)) = self.by_start.range(..start).next_back() {
-            if prev_end == start {
-                self.by_size.remove(&(prev_end - prev_start, prev_start));
-                self.by_start.remove(&prev_start);
-                start = prev_start;
-            }
+        if let Some((&prev_start, &prev_end)) = self.by_start.range(..start).next_back()
+            && prev_end == start
+        {
+            self.by_size.remove(&(prev_end - prev_start, prev_start));
+            self.by_start.remove(&prev_start);
+            start = prev_start;
         }
 
         self.by_start.insert(start, end);
@@ -96,6 +96,7 @@ impl<T> VertexArena<T> {
             usage,
             mapped_at_creation: false,
         });
+        #[allow(clippy::reversed_empty_ranges)]
         VertexArena {
             data: Vec::new(),
             device,
@@ -232,7 +233,10 @@ impl<T> VertexArena<T> {
             }
         }
 
-        self.dirty_range = usize::MAX..0;
+        #[allow(clippy::reversed_empty_ranges)]
+        {
+            self.dirty_range = usize::MAX..0;
+        }
     }
 
     pub fn read_buffers(&self, mut f: impl FnMut(&Buffer, usize)) {

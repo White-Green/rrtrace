@@ -20,7 +20,7 @@ impl UniversalNotifier {
 
     #[inline(always)]
     pub fn wait(&self, v: u32) {
-        atomic_wait::wait(&*self.target, v)
+        atomic_wait::wait(&self.target, v)
     }
 
     #[inline(always)]

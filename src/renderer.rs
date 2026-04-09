@@ -494,13 +494,14 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if let Some(state) = &mut self.surface_state {
-            if new_size.width > 0 && new_size.height > 0 {
-                state.config.width = new_size.width;
-                state.config.height = new_size.height;
-                state.surface.configure(&self.device, &state.config);
-                state.depth_texture = Self::create_depth_texture(&self.device, &state.config);
-            }
+        if let Some(state) = &mut self.surface_state
+            && new_size.width > 0
+            && new_size.height > 0
+        {
+            state.config.width = new_size.width;
+            state.config.height = new_size.height;
+            state.surface.configure(&self.device, &state.config);
+            state.depth_texture = Self::create_depth_texture(&self.device, &state.config);
         }
     }
 
@@ -735,15 +736,12 @@ where
     }
 
     fn remove(&mut self, value: T) {
-        match self.inner.entry(value) {
-            Entry::Vacant(_) => return,
-            Entry::Occupied(mut entry) => {
-                let count = entry.get_mut();
-                if *count <= 1 {
-                    entry.remove();
-                } else {
-                    *count -= 1;
-                }
+        if let Entry::Occupied(mut entry) = self.inner.entry(value) {
+            let count = entry.get_mut();
+            if *count <= 1 {
+                entry.remove();
+            } else {
+                *count -= 1;
             }
         }
     }
