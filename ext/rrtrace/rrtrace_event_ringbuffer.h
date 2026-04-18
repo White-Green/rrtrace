@@ -8,11 +8,11 @@
 
 typedef struct {
     RRTraceEvent buffer[SIZE];
-    alignas(64) struct {
+    alignas(128) struct {
         atomic_uint_fast64_t write_index;
         uint64_t read_index_cache;
     } writer;
-    alignas(64) struct {
+    alignas(128) struct {
         atomic_uint_fast64_t read_index;
         uint64_t write_index_cache;
     } reader;
