@@ -1,4 +1,7 @@
 module Rrtrace
   VERSION: String
   def self.visualizer_path: () -> String
+  def self.start: () -> bool
+  def self.stop: () -> bool
+  def self.started?: () -> bool
 end
