@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "rrtrace"
+
+self_executable = ARGV.shift
+raise "Usage: #{self_executable} <executable.rb> [args...]" if ARGV.empty?
+
+$0 = ARGV[0]
+Rrtrace.start
+load ARGV[0]
+Rrtrace.stop
