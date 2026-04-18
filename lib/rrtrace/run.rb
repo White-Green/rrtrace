@@ -3,4 +3,3 @@
 require "rrtrace"
 
 Rrtrace.start
-at_exit { Rrtrace.stop }

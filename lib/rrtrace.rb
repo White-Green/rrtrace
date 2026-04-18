@@ -36,3 +36,5 @@ require "rrtrace/rrtrace"
 module Rrtrace
   private_class_method :native_start, :native_stop, :native_started?
 end
+
+Kernel.at_exit { Rrtrace.stop }
