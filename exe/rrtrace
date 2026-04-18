@@ -3,10 +3,14 @@
 
 require "rrtrace"
 
-self_executable = ARGV.shift
-raise "Usage: #{self_executable} <executable.rb> [args...]" if ARGV.empty?
+if ARGV.empty?
+    $stderr.puts "Usage: rrtrace <executable.rb> [args...]"
+    exit 1
+end
 
-$0 = ARGV[0]
+executable = ARGV.shift
+
+$0 = executable
 Rrtrace.start
-load ARGV[0]
+load executable
 Rrtrace.stop
