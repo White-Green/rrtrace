@@ -149,35 +149,6 @@ static void thread_exit_handler(rb_event_flag_t event, const rb_internal_thread_
 
 static TraceContext trace_context;
 
-RUBY_FUNC_EXPORTED void
-Init_rrtrace(void)
-{
-  TraceContext *context = &trace_context;
-  context->shared_memory = invalid_shared_memory_handle();
-  context->event_ringbuffer = NULL;
-  context->visualizer_process_id = invalid_process_id();
-  context->thread_start_hook = NULL;
-  context->thread_ready_hook = NULL;
-  context->thread_suspended_hook = NULL;
-  context->thread_resume_hook = NULL;
-  context->thread_exit_hook = NULL;
-  context->trace_call = Qnil;
-  context->trace_return = Qnil;
-  context->trace_gc_start = Qnil;
-  context->trace_gc_end = Qnil;
-  context->thread_data_key = rb_internal_thread_specific_key_create();
-  atomic_init(&context->next_thread_id, 1);
-  context->started = 0;
-#ifdef RRTRACE_WRITE_DEBUG_LOG
-  context->log = fopen("rrtrace.log", "w");
-#endif
-
-  VALUE mRrtrace = rb_const_get(rb_cObject, rb_intern("Rrtrace"));
-  rb_define_singleton_method(mRrtrace, "native_start", rrtrace_native_start, 1);
-  rb_define_singleton_method(mRrtrace, "native_stop", rrtrace_native_stop, 0);
-  rb_define_singleton_method(mRrtrace, "native_started?", rrtrace_native_started_p, 0);
-}
-
 static void unregister_tracepoint(VALUE *tracepoint) {
   if (NIL_P(*tracepoint)) return;
 
@@ -288,4 +259,33 @@ static VALUE rrtrace_native_start(VALUE self, VALUE visualizer) {
 
   context->started = 1;
   return Qtrue;
+}
+
+RUBY_FUNC_EXPORTED void
+Init_rrtrace(void)
+{
+  TraceContext *context = &trace_context;
+  context->shared_memory = invalid_shared_memory_handle();
+  context->event_ringbuffer = NULL;
+  context->visualizer_process_id = invalid_process_id();
+  context->thread_start_hook = NULL;
+  context->thread_ready_hook = NULL;
+  context->thread_suspended_hook = NULL;
+  context->thread_resume_hook = NULL;
+  context->thread_exit_hook = NULL;
+  context->trace_call = Qnil;
+  context->trace_return = Qnil;
+  context->trace_gc_start = Qnil;
+  context->trace_gc_end = Qnil;
+  context->thread_data_key = rb_internal_thread_specific_key_create();
+  atomic_init(&context->next_thread_id, 1);
+  context->started = 0;
+#ifdef RRTRACE_WRITE_DEBUG_LOG
+  context->log = fopen("rrtrace.log", "w");
+#endif
+
+  VALUE mRrtrace = rb_const_get(rb_cObject, rb_intern("Rrtrace"));
+  rb_define_singleton_method(mRrtrace, "native_start", rrtrace_native_start, 1);
+  rb_define_singleton_method(mRrtrace, "native_stop", rrtrace_native_stop, 0);
+  rb_define_singleton_method(mRrtrace, "native_started?", rrtrace_native_started_p, 0);
 }
