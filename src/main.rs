@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
 use winit::event::*;
@@ -175,6 +175,8 @@ fn queue_pipe_thread(
                     offset = 0;
                     before_send_time = last_time;
                 }
+            } else {
+                thread::sleep(Duration::from_millis(1));
             }
         }
     }
