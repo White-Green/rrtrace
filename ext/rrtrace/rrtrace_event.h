@@ -1,9 +1,14 @@
 #ifndef RRTRACE_EVENT_H
 #define RRTRACE_EVENT_H
 
-#include <time.h>
 #include <stdatomic.h>
 #include <stdint.h>
+
+#if defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__)
+#include "time_windows.h"
+#else
+#include "time_posix.h"
+#endif
 
 #define EVENT_TYPE_CALL             0x0000000000000000ull
 #define EVENT_TYPE_RETURN           0x1000000000000000ull
@@ -21,22 +26,6 @@ typedef struct {
     uint64_t timestamp_and_event_type;
     uint64_t data;
 } RRTraceEvent;
-
-static uint64_t rrtrace_base_timestamp = 0;
-
-static inline void init_base_timestamp(void) {
-    struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
-    rrtrace_base_timestamp = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
-static inline uint64_t now(void) {
-    struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
-    uint64_t timestamp = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-
-    return timestamp - rrtrace_base_timestamp;
-}
 
 static inline RRTraceEvent event_call(uint64_t method_id) {
     RRTraceEvent event;
