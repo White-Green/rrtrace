@@ -14,6 +14,43 @@ pub struct CallBox {
     depth: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadLine {
+    start_time: [u32; 2],
+    end_time: [u32; 2],
+}
+
+impl ThreadLine {
+    pub fn start_time(&self) -> [u32; 2] {
+        self.start_time
+    }
+
+    pub fn end_time(&self) -> [u32; 2] {
+        self.end_time
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ThreadData {
+    thread_id: u32,
+    call_boxes: Vec<CallBox>,
+    thread_line: ThreadLine,
+}
+
+impl ThreadData {
+    pub fn thread_id(&self) -> u32 {
+        self.thread_id
+    }
+
+    pub fn call_boxes(&self) -> &[CallBox] {
+        &self.call_boxes
+    }
+
+    pub fn thread_line(&self) -> ThreadLine {
+        self.thread_line
+    }
+}
+
 pub const VISIBLE_DURATION: u64 = 1_000_000_000 * 5;
 
 pub fn encode_time(time: u64) -> [u32; 2] {
@@ -127,12 +164,20 @@ impl FastTrace {
                     current_thread = ThreadId::Id(thread_id);
                     current_thread_stack = thread_stacks.entry(thread_id).or_default();
                 }
+                RRTraceEventType::ThreadStart => {
+                    let thread_id = event.data() as u32;
+                    thread_stacks.insert(thread_id, StackState::new());
+                    current_thread_stack = if let ThreadId::Id(current_thread_id) = current_thread {
+                        thread_stacks.entry(current_thread_id).or_default()
+                    } else {
+                        &mut initial_thread_stack
+                    };
+                }
                 RRTraceEventType::ThreadExit => {
                     current_thread_stack.exit();
                 }
                 RRTraceEventType::GCStart
                 | RRTraceEventType::GCEnd
-                | RRTraceEventType::ThreadStart
                 | RRTraceEventType::ThreadReady => {}
             }
         }
@@ -209,8 +254,57 @@ struct CallStackEntry {
     method_id: u64,
 }
 
+#[derive(Debug, Clone)]
+struct ThreadTraceState {
+    thread_id: u32,
+    stack: Vec<CallStackEntry>,
+    call_boxes: Vec<CallBox>,
+    thread_line: ThreadLine,
+}
+
+impl ThreadTraceState {
+    fn from_stack(thread_id: u32, stack: &StackState, start_time: u64, end_time: u64) -> Self {
+        Self {
+            thread_id,
+            stack: stack
+                .stack
+                .iter()
+                .map(|&method_id| CallStackEntry {
+                    method_id,
+                    vertex_index: usize::MAX,
+                })
+                .collect(),
+            call_boxes: Vec::new(),
+            thread_line: ThreadLine {
+                start_time: encode_time(start_time),
+                end_time: encode_time(end_time),
+            },
+        }
+    }
+
+    fn new(thread_id: u32, start_time: u64, end_time: u64) -> Self {
+        Self {
+            thread_id,
+            stack: Vec::new(),
+            call_boxes: Vec::new(),
+            thread_line: ThreadLine {
+                start_time: encode_time(start_time),
+                end_time: encode_time(end_time),
+            },
+        }
+    }
+
+    fn into_thread_data(self) -> ThreadData {
+        ThreadData {
+            thread_id: self.thread_id,
+            call_boxes: self.call_boxes,
+            thread_line: self.thread_line,
+        }
+    }
+}
+
 pub struct SlowTrace {
-    data: Vec<(u32, Vec<CallStackEntry>, Vec<CallBox>)>,
+    data: Vec<ThreadData>,
     max_depth: u32,
     end_time: u64,
     gc_events: Vec<u64>,
@@ -235,27 +329,20 @@ impl SlowTrace {
         let mut call_stack = thread_stacks
             .iter()
             .map(|(&thread_id, stack)| {
-                (
-                    thread_id,
-                    stack
-                        .stack
-                        .iter()
-                        .map(|&method_id| CallStackEntry {
-                            method_id,
-                            vertex_index: usize::MAX,
-                        })
-                        .collect::<Vec<_>>(),
-                    Vec::new(),
-                )
+                ThreadTraceState::from_stack(thread_id, stack, start_time, end_time)
             })
             .collect::<Vec<_>>();
-        if !in_gc && let Some((_, stack, vertices)) = call_stack.get_mut(current_thread as usize) {
-            vertices.reserve(stack.len());
+        if !in_gc
+            && let Some(ThreadTraceState {
+                stack, call_boxes, ..
+            }) = call_stack.get_mut(current_thread as usize)
+        {
+            call_boxes.reserve(stack.len());
             for (depth, entry) in stack.iter_mut().enumerate() {
-                entry.vertex_index = vertices.len();
+                entry.vertex_index = call_boxes.len();
                 let depth = depth as u32;
                 max_depth = max_depth.max(depth);
-                vertices.push(CallBox {
+                call_boxes.push(CallBox {
                     start_time: encode_time(start_time),
                     end_time: encode_time(end_time),
                     method_id: entry.method_id as u32,
@@ -265,11 +352,13 @@ impl SlowTrace {
         }
         let mut null_vec1 = Vec::new();
         let mut null_vec2 = Vec::new();
-        let (mut current_stack, mut current_vertices) = call_stack
-            .get_mut(current_thread as usize)
-            .map_or((&mut null_vec1, &mut null_vec2), |(_, stack, vertices)| {
-                (stack, vertices)
-            });
+        let (mut current_stack, mut current_vertices) =
+            call_stack.get_mut(current_thread as usize).map_or(
+                (&mut null_vec1, &mut null_vec2),
+                |ThreadTraceState {
+                     stack, call_boxes, ..
+                 }| { (stack, call_boxes) },
+            );
         for event in events {
             match event.event_type() {
                 RRTraceEventType::Call => {
@@ -336,12 +425,19 @@ impl SlowTrace {
                 }
                 RRTraceEventType::ThreadResume => {
                     let thread_id = event.data() as u32;
-                    let index = call_stack.binary_search_by_key(&thread_id, |&(tid, _, _)| tid);
+                    let index = call_stack.binary_search_by_key(
+                        &thread_id,
+                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    );
                     if let Err(i) = index {
-                        call_stack.insert(i, (thread_id, Vec::new(), Vec::new()));
+                        call_stack
+                            .insert(i, ThreadTraceState::new(thread_id, start_time, end_time));
                     }
-                    let (_, new_stack, new_vertices) =
-                        &mut call_stack[index.unwrap_or_else(convert::identity)];
+                    let ThreadTraceState {
+                        stack: new_stack,
+                        call_boxes: new_vertices,
+                        ..
+                    } = &mut call_stack[index.unwrap_or_else(convert::identity)];
 
                     for (
                         depth,
@@ -365,23 +461,72 @@ impl SlowTrace {
 
                     (current_stack, current_vertices) = (new_stack, new_vertices);
                 }
-                RRTraceEventType::ThreadExit
-                | RRTraceEventType::ThreadStart
-                | RRTraceEventType::ThreadReady => {}
+                RRTraceEventType::ThreadStart => {
+                    let thread_id = event.data() as u32;
+                    let index = call_stack.binary_search_by_key(
+                        &thread_id,
+                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    );
+                    let i = match index {
+                        Ok(i) => {
+                            call_stack[i].thread_line.start_time = encode_time(event.timestamp());
+                            i
+                        }
+                        Err(i) => {
+                            call_stack.insert(
+                                i,
+                                ThreadTraceState::new(thread_id, event.timestamp(), end_time),
+                            );
+                            i
+                        }
+                    };
+                    let ThreadTraceState {
+                        stack, call_boxes, ..
+                    } = &mut call_stack[i];
+                    current_stack = stack;
+                    current_vertices = call_boxes;
+                }
+                RRTraceEventType::ThreadExit => {
+                    let thread_id = event.data() as u32;
+                    let index = call_stack.binary_search_by_key(
+                        &thread_id,
+                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    );
+                    let i = match index {
+                        Ok(i) => {
+                            call_stack[i].thread_line.end_time = encode_time(event.timestamp());
+                            i
+                        }
+                        Err(i) => {
+                            call_stack.insert(
+                                i,
+                                ThreadTraceState::new(thread_id, start_time, event.timestamp()),
+                            );
+                            i
+                        }
+                    };
+                    let ThreadTraceState {
+                        stack, call_boxes, ..
+                    } = &mut call_stack[i];
+                    current_stack = stack;
+                    current_vertices = call_boxes;
+                }
+                RRTraceEventType::ThreadReady => {}
             }
         }
         SlowTrace {
-            data: call_stack,
+            data: call_stack
+                .into_iter()
+                .map(ThreadTraceState::into_thread_data)
+                .collect(),
             max_depth,
             end_time,
             gc_events,
         }
     }
 
-    pub fn data(&self) -> impl Iterator<Item = (u32, &[CallBox])> {
-        self.data
-            .iter()
-            .map(|&(thread_id, _, ref call_box)| (thread_id, call_box.as_slice()))
+    pub fn data(&self) -> &[ThreadData] {
+        &self.data
     }
 
     pub fn gc_events(&self) -> &[u64] {

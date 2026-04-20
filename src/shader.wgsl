@@ -13,6 +13,19 @@ struct GCBox {
     @location(1) time: vec2<u32>,
 }
 
+struct LineVertex {
+    @location(0) position: f32,
+}
+
+struct LineSegment {
+    @location(1) start_time: vec2<u32>,
+    @location(2) end_time: vec2<u32>,
+    @location(3) start_pos: vec3<f32>,
+    @location(4) end_pos: vec3<f32>,
+    @location(5) color: vec4<f32>,
+    @location(6) kind: u32,
+}
+
 struct CameraUniform {
     view_proj: mat4x4<f32>,
     base_time: vec2<u32>, // x: lo, y: hi
@@ -89,6 +102,38 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
+}
+
+@vertex
+fn vs_line(
+    v: LineVertex,
+    segment: LineSegment,
+) -> VertexOutput {
+    let t = v.position;
+    let start_x = select(
+        segment.start_pos.x,
+        u64tof32(sub64(camera.base_time, segment.start_time)) / 500000000.0,
+        segment.kind == 0u,
+    );
+    let end_x = select(
+        segment.end_pos.x,
+        u64tof32(sub64(camera.base_time, segment.end_time)) / 500000000.0,
+        segment.kind == 0u,
+    );
+    let world_pos = vec3<f32>(
+        mix(start_x, end_x, t),
+        mix(segment.start_pos.y, segment.end_pos.y, t),
+        mix(
+            segment.start_pos.z / f32(max(camera.num_threads, 1u)),
+            segment.end_pos.z / f32(max(camera.num_threads, 1u)),
+            t,
+        ),
+    );
+
+    var out: VertexOutput;
+    out.color = segment.color;
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
+    return out;
 }
 
 struct GCVertex {
