@@ -34,6 +34,7 @@ typedef struct {
   VALUE trace_gc_end;
   rb_internal_thread_specific_key_t thread_data_key;
   atomic_uint_fast32_t next_thread_id;
+  atomic_flag event_ringbuffer_lock;
   int started;
 #ifdef RRTRACE_WRITE_DEBUG_LOG
   FILE *log;
@@ -42,12 +43,15 @@ typedef struct {
 
 static inline void push_event(TraceContext *context, RRTraceEvent event) {
   if (context->event_ringbuffer == NULL) return;
+  while (atomic_flag_test_and_set_explicit(&context->event_ringbuffer_lock, memory_order_acquire)) {
+  }
   while (!rrtrace_event_ringbuffer_push(context->event_ringbuffer, event)) {
     if (!is_process_running(context->visualizer_process_id)) {
       context->event_ringbuffer = NULL;
       break;
     }
   }
+  atomic_flag_clear_explicit(&context->event_ringbuffer_lock, memory_order_release);
 }
 
 static uint32_t get_thread_id(TraceContext *context, VALUE thread) {
@@ -279,6 +283,7 @@ Init_rrtrace(void)
   context->trace_gc_end = Qnil;
   context->thread_data_key = rb_internal_thread_specific_key_create();
   atomic_init(&context->next_thread_id, 1);
+  atomic_flag_clear(&context->event_ringbuffer_lock);
   context->started = 0;
 #ifdef RRTRACE_WRITE_DEBUG_LOG
   context->log = fopen("rrtrace.log", "w");

@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::Debug;
-use std::{convert, iter, mem};
+use std::{iter, mem};
 
 #[repr(C)]
 #[derive(Copy, Default, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -303,6 +303,28 @@ impl ThreadTraceState {
     }
 }
 
+fn find_thread_index(call_stack: &[ThreadTraceState], thread_id: u32) -> Result<usize, usize> {
+    call_stack.binary_search_by_key(&thread_id, |state| state.thread_id)
+}
+
+fn get_or_insert_thread_state(
+    call_stack: &mut Vec<ThreadTraceState>,
+    thread_id: u32,
+    start_time: u64,
+    end_time: u64,
+) -> usize {
+    match find_thread_index(call_stack, thread_id) {
+        Ok(index) => index,
+        Err(index) => {
+            call_stack.insert(
+                index,
+                ThreadTraceState::new(thread_id, start_time, end_time),
+            );
+            index
+        }
+    }
+}
+
 pub struct SlowTrace {
     data: Vec<ThreadData>,
     max_depth: u32,
@@ -332,11 +354,11 @@ impl SlowTrace {
                 ThreadTraceState::from_stack(thread_id, stack, start_time, end_time)
             })
             .collect::<Vec<_>>();
-        if !in_gc
-            && let Some(ThreadTraceState {
+        call_stack.sort_unstable_by_key(|state| state.thread_id);
+        if !in_gc && let Ok(index) = find_thread_index(&call_stack, current_thread) {
+            let ThreadTraceState {
                 stack, call_boxes, ..
-            }) = call_stack.get_mut(current_thread as usize)
-        {
+            } = &mut call_stack[index];
             call_boxes.reserve(stack.len());
             for (depth, entry) in stack.iter_mut().enumerate() {
                 entry.vertex_index = call_boxes.len();
@@ -350,94 +372,133 @@ impl SlowTrace {
                 });
             }
         }
-        let mut null_vec1 = Vec::new();
-        let mut null_vec2 = Vec::new();
-        let (mut current_stack, mut current_vertices) =
-            call_stack.get_mut(current_thread as usize).map_or(
-                (&mut null_vec1, &mut null_vec2),
-                |ThreadTraceState {
-                     stack, call_boxes, ..
-                 }| { (stack, call_boxes) },
-            );
+        let mut current_thread_id = (current_thread != u32::MAX).then_some(current_thread);
         for event in events {
             match event.event_type() {
                 RRTraceEventType::Call => {
-                    let vertex_index = current_vertices.len();
-                    let depth = current_stack.len() as u32;
-                    current_stack.push(CallStackEntry {
-                        vertex_index,
-                        method_id: event.data(),
-                    });
-                    current_vertices.push(CallBox {
-                        start_time: encode_time(event.timestamp()),
-                        end_time: encode_time(end_time),
-                        method_id: event.data() as u32,
-                        depth,
-                    });
-                    max_depth = max_depth.max(depth);
+                    if let Some(index) = current_thread_id
+                        .and_then(|thread_id| find_thread_index(&call_stack, thread_id).ok())
+                    {
+                        let ThreadTraceState {
+                            stack: current_stack,
+                            call_boxes: current_vertices,
+                            ..
+                        } = &mut call_stack[index];
+                        let vertex_index = current_vertices.len();
+                        let depth = current_stack.len() as u32;
+                        current_stack.push(CallStackEntry {
+                            vertex_index,
+                            method_id: event.data(),
+                        });
+                        current_vertices.push(CallBox {
+                            start_time: encode_time(event.timestamp()),
+                            end_time: encode_time(end_time),
+                            method_id: event.data() as u32,
+                            depth,
+                        });
+                        max_depth = max_depth.max(depth);
+                    }
                 }
                 RRTraceEventType::Return => {
-                    while let Some(CallStackEntry {
-                        vertex_index,
-                        method_id,
-                    }) = current_stack.pop()
+                    if let Some(index) = current_thread_id
+                        .and_then(|thread_id| find_thread_index(&call_stack, thread_id).ok())
                     {
-                        current_vertices[vertex_index].end_time = encode_time(event.timestamp());
-                        if method_id == event.data() {
-                            break;
+                        let ThreadTraceState {
+                            stack: current_stack,
+                            call_boxes: current_vertices,
+                            ..
+                        } = &mut call_stack[index];
+                        while let Some(CallStackEntry {
+                            vertex_index,
+                            method_id,
+                        }) = current_stack.pop()
+                        {
+                            current_vertices[vertex_index].end_time =
+                                encode_time(event.timestamp());
+                            if method_id == event.data() {
+                                break;
+                            }
                         }
                     }
                 }
                 RRTraceEventType::GCStart => {
                     gc_events.push(event.timestamp());
-                    for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
-                        current_vertices[*vertex_index].end_time = encode_time(event.timestamp());
-                        *vertex_index = usize::MAX;
+                    if let Some(index) = current_thread_id
+                        .and_then(|thread_id| find_thread_index(&call_stack, thread_id).ok())
+                    {
+                        let ThreadTraceState {
+                            stack: current_stack,
+                            call_boxes: current_vertices,
+                            ..
+                        } = &mut call_stack[index];
+                        for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
+                            current_vertices[*vertex_index].end_time =
+                                encode_time(event.timestamp());
+                            *vertex_index = usize::MAX;
+                        }
                     }
                 }
                 RRTraceEventType::GCEnd => {
                     gc_events.push(event.timestamp());
-                    for (
-                        depth,
-                        &mut CallStackEntry {
-                            ref mut vertex_index,
-                            method_id,
-                        },
-                    ) in current_stack.iter_mut().enumerate()
+                    if let Some(index) = current_thread_id
+                        .and_then(|thread_id| find_thread_index(&call_stack, thread_id).ok())
                     {
-                        let new_index = current_vertices.len();
-                        let depth = depth as u32;
-                        current_vertices.push(CallBox {
-                            start_time: encode_time(event.timestamp()),
-                            end_time: encode_time(end_time),
-                            method_id: method_id as u32,
+                        let ThreadTraceState {
+                            stack: current_stack,
+                            call_boxes: current_vertices,
+                            ..
+                        } = &mut call_stack[index];
+                        for (
                             depth,
-                        });
-                        max_depth = max_depth.max(depth);
-                        *vertex_index = new_index;
+                            &mut CallStackEntry {
+                                ref mut vertex_index,
+                                method_id,
+                            },
+                        ) in current_stack.iter_mut().enumerate()
+                        {
+                            let new_index = current_vertices.len();
+                            let depth = depth as u32;
+                            current_vertices.push(CallBox {
+                                start_time: encode_time(event.timestamp()),
+                                end_time: encode_time(end_time),
+                                method_id: method_id as u32,
+                                depth,
+                            });
+                            max_depth = max_depth.max(depth);
+                            *vertex_index = new_index;
+                        }
                     }
                 }
                 RRTraceEventType::ThreadSuspended => {
-                    for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
-                        current_vertices[*vertex_index].end_time = encode_time(event.timestamp());
-                        *vertex_index = usize::MAX;
+                    if let Some(index) = current_thread_id
+                        .and_then(|thread_id| find_thread_index(&call_stack, thread_id).ok())
+                    {
+                        let ThreadTraceState {
+                            stack: current_stack,
+                            call_boxes: current_vertices,
+                            ..
+                        } = &mut call_stack[index];
+                        for CallStackEntry { vertex_index, .. } in current_stack.iter_mut() {
+                            current_vertices[*vertex_index].end_time =
+                                encode_time(event.timestamp());
+                            *vertex_index = usize::MAX;
+                        }
                     }
+                    current_thread_id = None;
                 }
                 RRTraceEventType::ThreadResume => {
                     let thread_id = event.data() as u32;
-                    let index = call_stack.binary_search_by_key(
-                        &thread_id,
-                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    let index = get_or_insert_thread_state(
+                        &mut call_stack,
+                        thread_id,
+                        start_time,
+                        end_time,
                     );
-                    if let Err(i) = index {
-                        call_stack
-                            .insert(i, ThreadTraceState::new(thread_id, start_time, end_time));
-                    }
                     let ThreadTraceState {
                         stack: new_stack,
                         call_boxes: new_vertices,
                         ..
-                    } = &mut call_stack[index.unwrap_or_else(convert::identity)];
+                    } = &mut call_stack[index];
 
                     for (
                         depth,
@@ -459,57 +520,36 @@ impl SlowTrace {
                         *vertex_index = new_index;
                     }
 
-                    (current_stack, current_vertices) = (new_stack, new_vertices);
+                    current_thread_id = Some(thread_id);
                 }
                 RRTraceEventType::ThreadStart => {
                     let thread_id = event.data() as u32;
-                    let index = call_stack.binary_search_by_key(
-                        &thread_id,
-                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    let index = get_or_insert_thread_state(
+                        &mut call_stack,
+                        thread_id,
+                        event.timestamp(),
+                        end_time,
                     );
-                    let i = match index {
-                        Ok(i) => {
-                            call_stack[i].thread_line.start_time = encode_time(event.timestamp());
-                            i
-                        }
-                        Err(i) => {
-                            call_stack.insert(
-                                i,
-                                ThreadTraceState::new(thread_id, event.timestamp(), end_time),
-                            );
-                            i
-                        }
-                    };
-                    let ThreadTraceState {
-                        stack, call_boxes, ..
-                    } = &mut call_stack[i];
-                    current_stack = stack;
-                    current_vertices = call_boxes;
+                    call_stack[index].thread_line.start_time = encode_time(event.timestamp());
                 }
                 RRTraceEventType::ThreadExit => {
                     let thread_id = event.data() as u32;
-                    let index = call_stack.binary_search_by_key(
-                        &thread_id,
-                        |&ThreadTraceState { thread_id, .. }| thread_id,
+                    let index = get_or_insert_thread_state(
+                        &mut call_stack,
+                        thread_id,
+                        start_time,
+                        event.timestamp(),
                     );
-                    let i = match index {
-                        Ok(i) => {
-                            call_stack[i].thread_line.end_time = encode_time(event.timestamp());
-                            i
+                    let thread_state = &mut call_stack[index];
+                    thread_state.thread_line.end_time = encode_time(event.timestamp());
+                    if current_thread_id == Some(thread_id) {
+                        for CallStackEntry { vertex_index, .. } in thread_state.stack.iter_mut() {
+                            thread_state.call_boxes[*vertex_index].end_time =
+                                encode_time(event.timestamp());
+                            *vertex_index = usize::MAX;
                         }
-                        Err(i) => {
-                            call_stack.insert(
-                                i,
-                                ThreadTraceState::new(thread_id, start_time, event.timestamp()),
-                            );
-                            i
-                        }
-                    };
-                    let ThreadTraceState {
-                        stack, call_boxes, ..
-                    } = &mut call_stack[i];
-                    current_stack = stack;
-                    current_vertices = call_boxes;
+                        current_thread_id = None;
+                    }
                 }
                 RRTraceEventType::ThreadReady => {}
             }
@@ -539,5 +579,78 @@ impl SlowTrace {
 
     pub fn max_depth(&self) -> u32 {
         self.max_depth
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(event_type: RRTraceEventType, timestamp: u64, data: u64) -> RRTraceEvent {
+        let event_bits = match event_type {
+            RRTraceEventType::Call => 0x0000000000000000,
+            RRTraceEventType::Return => 0x1000000000000000,
+            RRTraceEventType::GCStart => 0x2000000000000000,
+            RRTraceEventType::GCEnd => 0x3000000000000000,
+            RRTraceEventType::ThreadStart => 0x4000000000000000,
+            RRTraceEventType::ThreadReady => 0x5000000000000000,
+            RRTraceEventType::ThreadSuspended => 0x6000000000000000,
+            RRTraceEventType::ThreadResume => 0x7000000000000000,
+            RRTraceEventType::ThreadExit => 0x8000000000000000,
+        };
+        unsafe { mem::transmute([timestamp | event_bits, data]) }
+    }
+
+    #[test]
+    fn slow_trace_uses_thread_id_instead_of_vector_index() {
+        let fast_trace = FastTrace {
+            thread_stacks: HashMap::from([(2, StackState::new())]),
+            initial_thread_stack: StackState::new(),
+            current_thread: ThreadId::Id(2),
+            in_gc: false,
+        };
+
+        let trace = SlowTrace::trace(0, &fast_trace, &[event(RRTraceEventType::Call, 10, 42)]);
+        let thread_data = trace
+            .data()
+            .iter()
+            .find(|data| data.thread_id() == 2)
+            .unwrap();
+
+        assert_eq!(thread_data.call_boxes().len(), 1);
+        assert_eq!(thread_data.call_boxes()[0].method_id, 42);
+    }
+
+    #[test]
+    fn thread_start_does_not_switch_current_thread() {
+        let fast_trace = FastTrace {
+            thread_stacks: HashMap::from([(0, StackState::new())]),
+            initial_thread_stack: StackState::new(),
+            current_thread: ThreadId::Id(0),
+            in_gc: false,
+        };
+
+        let trace = SlowTrace::trace(
+            0,
+            &fast_trace,
+            &[
+                event(RRTraceEventType::ThreadStart, 5, 1),
+                event(RRTraceEventType::Call, 10, 42),
+            ],
+        );
+        let main_thread = trace
+            .data()
+            .iter()
+            .find(|data| data.thread_id() == 0)
+            .unwrap();
+        let child_thread = trace
+            .data()
+            .iter()
+            .find(|data| data.thread_id() == 1)
+            .unwrap();
+
+        assert_eq!(main_thread.call_boxes().len(), 1);
+        assert_eq!(main_thread.call_boxes()[0].method_id, 42);
+        assert!(child_thread.call_boxes().is_empty());
     }
 }

@@ -217,10 +217,7 @@ impl LineSegment {
     }
 }
 
-const LINE_VERTICES: &[LineVertex] = &[
-    LineVertex { position: 0.0 },
-    LineVertex { position: 1.0 },
-];
+const LINE_VERTICES: &[LineVertex] = &[LineVertex { position: 0.0 }, LineVertex { position: 1.0 }];
 
 const AXIS_LINE_COLOR: [f32; 4] = [0.35, 0.4, 0.5, 1.0];
 const THREAD_LINE_COLOR: [f32; 4] = [0.45, 0.7, 1.0, 1.0];
@@ -714,8 +711,7 @@ impl Renderer {
             }
 
             let gc_events = trace.gc_events();
-            let line_count = trace
-                .data().len();
+            let line_count = trace.data().len();
             let line_data = if line_count > 0 {
                 let mut line_segments = Vec::with_capacity(line_count);
                 for thread_data in trace.data() {
