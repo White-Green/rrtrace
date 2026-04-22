@@ -108,45 +108,50 @@ static void tracepoint_gc_end_handler(VALUE tpval, void *data) {
 
 static void thread_start_handler(rb_event_flag_t event, const rb_internal_thread_event_data_t *event_data, void *data) {
   TraceContext *context = (TraceContext *)data;
-  push_event(context, event_thread_start(get_thread_id(context, event_data->thread)));
+  uint32_t thread_id = get_thread_id(context, event_data->thread);
+  push_event(context, event_thread_start(thread_id));
 #ifdef RRTRACE_WRITE_DEBUG_LOG
-  fprintf(context->log, "THREAD START\n");
+  fprintf(context->log, "THREAD %02d START\n", thread_id);
   fflush(context->log);
 #endif
 }
 
 static void thread_ready_handler(rb_event_flag_t event, const rb_internal_thread_event_data_t *event_data, void *data) {
   TraceContext *context = (TraceContext *)data;
-  push_event(context, event_thread_ready(get_thread_id(context, event_data->thread)));
+  uint32_t thread_id = get_thread_id(context, event_data->thread);
+  push_event(context, event_thread_ready(thread_id));
 #ifdef RRTRACE_WRITE_DEBUG_LOG
-  fprintf(context->log, "THREAD READY\n");
+  fprintf(context->log, "THREAD %02d READY\n", thread_id);
   fflush(context->log);
 #endif
 }
 
 static void thread_suspended_handler(rb_event_flag_t event, const rb_internal_thread_event_data_t *event_data, void *data) {
   TraceContext *context = (TraceContext *)data;
-  push_event(context, event_thread_suspended(get_thread_id(context, event_data->thread)));
+  uint32_t thread_id = get_thread_id(context, event_data->thread);
+  push_event(context, event_thread_suspended(thread_id));
 #ifdef RRTRACE_WRITE_DEBUG_LOG
-  fprintf(context->log, "THREAD SUSPENDED\n");
+  fprintf(context->log, "THREAD %02d SUSPENDED\n", thread_id);
   fflush(context->log);
 #endif
 }
 
 static void thread_resume_handler(rb_event_flag_t event, const rb_internal_thread_event_data_t *event_data, void *data) {
   TraceContext *context = (TraceContext *)data;
-  push_event(context, event_thread_resume(get_thread_id(context, event_data->thread)));
+  uint32_t thread_id = get_thread_id(context, event_data->thread);
+  push_event(context, event_thread_resume(thread_id));
 #ifdef RRTRACE_WRITE_DEBUG_LOG
-  fprintf(context->log, "THREAD RESUME\n");
+  fprintf(context->log, "THREAD %02d RESUME\n", thread_id);
   fflush(context->log);
 #endif
 }
 
 static void thread_exit_handler(rb_event_flag_t event, const rb_internal_thread_event_data_t *event_data, void *data) {
   TraceContext *context = (TraceContext *)data;
-  push_event(context, event_thread_exit(get_thread_id(context, event_data->thread)));
+  uint32_t thread_id = get_thread_id(context, event_data->thread);
+  push_event(context, event_thread_exit(thread_id));
 #ifdef RRTRACE_WRITE_DEBUG_LOG
-  fprintf(context->log, "THREAD EXIT\n");
+  fprintf(context->log, "THREAD %02d EXIT\n", thread_id);
   fflush(context->log);
 #endif
 }
