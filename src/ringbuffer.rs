@@ -50,13 +50,13 @@ impl RRTraceEvent {
 pub const SIZE: usize = 65_536;
 pub const MASK: usize = SIZE - 1;
 
-#[repr(C, align(64))]
+#[repr(C, align(128))]
 struct RRTraceEventRingBufferWriter {
     write_index: AtomicU64,
     read_index_cache: u64,
 }
 
-#[repr(C, align(64))]
+#[repr(C, align(128))]
 struct RRTraceEventRingBufferReader {
     read_index: AtomicU64,
     write_index_cache: u64,

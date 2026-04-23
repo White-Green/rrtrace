@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{env, mem, thread};
 use winit::application::ApplicationHandler;
 use winit::event::*;
@@ -169,12 +169,16 @@ fn queue_pipe_thread(
             let count = ringbuffer.read(&mut buffer[offset..]);
             if count > 0 {
                 offset += count;
-                let last_time = buffer[offset - 1].timestamp();
+                let chunk = &mut buffer[..offset];
+                chunk.sort_by_key(RRTraceEvent::timestamp);
+                let last_time = chunk.last().unwrap().timestamp();
                 if offset >= 1024 || last_time.saturating_sub(before_send_time) > 1_000_000 {
-                    event_queue.push(Arc::from(&buffer[..offset]));
+                    event_queue.push(Arc::from(&chunk[..]));
                     offset = 0;
                     before_send_time = last_time;
                 }
+            } else {
+                thread::sleep(Duration::from_millis(1));
             }
         }
     }

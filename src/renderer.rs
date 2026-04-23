@@ -143,6 +143,116 @@ const GC_VERTICES: &[GCVertex] = &[
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct LineVertex {
+    position: f32,
+}
+
+impl LineVertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32,
+            }],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct LineSegment {
+    start_time: [u32; 2],
+    end_time: [u32; 2],
+    start_pos: [f32; 3],
+    end_pos: [f32; 3],
+    color: [f32; 4],
+    kind: u32,
+    _padding: [u32; 3],
+}
+
+impl LineSegment {
+    const KIND_THREAD: u32 = 0;
+    const KIND_WORLD: u32 = 1;
+
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LineSegment>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Uint32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 28,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 40,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 56,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+            ],
+        }
+    }
+}
+
+const LINE_VERTICES: &[LineVertex] = &[LineVertex { position: 0.0 }, LineVertex { position: 1.0 }];
+
+const AXIS_LINE_COLOR: [f32; 4] = [0.35, 0.4, 0.5, 1.0];
+const THREAD_LINE_COLOR: [f32; 4] = [0.45, 0.7, 1.0, 1.0];
+const AXIS_LINE_INSTANCES: &[LineSegment] = &[
+    LineSegment {
+        start_time: [0, 0],
+        end_time: [0, 0],
+        start_pos: [0.0, 0.0, 0.0],
+        end_pos: [VISIBLE_DURATION as f32 / 500000000.0, 0.0, 0.0],
+        color: AXIS_LINE_COLOR,
+        kind: LineSegment::KIND_WORLD,
+        _padding: [0; 3],
+    },
+    LineSegment {
+        start_time: [0, 0],
+        end_time: [0, 0],
+        start_pos: [0.0, 0.0, 0.0],
+        end_pos: [0.0, 1.0, 0.0],
+        color: AXIS_LINE_COLOR,
+        kind: LineSegment::KIND_WORLD,
+        _padding: [0; 3],
+    },
+    LineSegment {
+        start_time: [0, 0],
+        end_time: [0, 0],
+        start_pos: [0.0, 0.0, 0.0],
+        end_pos: [0.0, 0.0, 1.0],
+        color: AXIS_LINE_COLOR,
+        kind: LineSegment::KIND_WORLD,
+        _padding: [0; 3],
+    },
+];
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     base_time: [u32; 2],
@@ -160,6 +270,7 @@ struct SurfaceState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
     gc_pipeline: wgpu::RenderPipeline,
     depth_texture: wgpu::TextureView,
 }
@@ -173,7 +284,8 @@ struct ThreadArena {
 #[derive(Debug, Eq, PartialEq)]
 struct TraceBatch {
     end_time: u64,
-    thread_data: Vec<(u32, AllocationId)>,
+    thread_data: Vec<(u32, Option<AllocationId>)>,
+    line_data: Option<AllocationId>,
     gc_data: Option<AllocationId>,
     max_depth: u32,
 }
@@ -199,7 +311,9 @@ pub struct Renderer {
     shader: wgpu::ShaderModule,
     render_pipeline_layout: wgpu::PipelineLayout,
     vertex_buffer: wgpu::Buffer,
+    line_vertex_buffer: wgpu::Buffer,
     gc_vertex_buffer: wgpu::Buffer,
+    axis_line_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     camera_uniform: CameraUniform,
@@ -208,6 +322,7 @@ pub struct Renderer {
     lane_alignment: u32,
     trace_queue: Arc<crossbeam_queue::SegQueue<SlowTrace>>,
     data_per_thread: BTreeMap<u32, ThreadArena>,
+    thread_line_vertex: VertexArena<LineSegment>,
     gc_vertex: VertexArena<GCBox>,
     thread_queue: BinaryHeap<Reverse<TraceBatch>>,
     base_time: u64,
@@ -311,9 +426,19 @@ impl Renderer {
             contents: bytemuck::cast_slice(VERTICES),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let line_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Line Vertex Buffer"),
+            contents: bytemuck::cast_slice(LINE_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let gc_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("GC Vertex Buffer"),
             contents: bytemuck::cast_slice(GC_VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let axis_line_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Axis Line Buffer"),
+            contents: bytemuck::cast_slice(AXIS_LINE_INSTANCES),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -332,7 +457,9 @@ impl Renderer {
             shader,
             render_pipeline_layout,
             vertex_buffer,
+            line_vertex_buffer,
             gc_vertex_buffer,
+            axis_line_buffer,
             index_buffer,
             num_indices,
             camera_uniform,
@@ -341,6 +468,11 @@ impl Renderer {
             lane_alignment,
             trace_queue,
             data_per_thread: BTreeMap::new(),
+            thread_line_vertex: VertexArena::new(
+                device.clone(),
+                queue.clone(),
+                BufferUsages::COPY_DST | BufferUsages::VERTEX,
+            ),
             gc_vertex: VertexArena::new(
                 device,
                 queue,
@@ -459,12 +591,55 @@ impl Renderer {
                 multiview_mask: None,
             });
 
+        let line_pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Line Pipeline"),
+                layout: Some(&self.render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &self.shader,
+                    entry_point: Some("vs_line"),
+                    buffers: &[LineVertex::desc(), LineSegment::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::LineList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                cache: None,
+                multiview_mask: None,
+            });
+
         let depth_texture = Self::create_depth_texture(&self.device, &config);
 
         self.surface_state = Some(SurfaceState {
             surface,
             config,
             render_pipeline,
+            line_pipeline,
             gc_pipeline,
             depth_texture,
         });
@@ -510,7 +685,9 @@ impl Renderer {
         while let Some(trace) = self.trace_queue.pop() {
             updated = true;
             let mut allocation_ids = Vec::new();
-            for (thread_id, call_box) in trace.data() {
+            for thread_data in trace.data() {
+                let thread_id = thread_data.thread_id();
+                let call_box = thread_data.call_boxes();
                 let s = self
                     .data_per_thread
                     .entry(thread_id)
@@ -523,12 +700,44 @@ impl Renderer {
                         ),
                     });
                 s.used_segments += 1;
-                let (allocation_id, slot) = s.vertex.alloc(call_box.len());
-                slot.copy_from_slice(call_box);
+                let allocation_id = if call_box.is_empty() {
+                    None
+                } else {
+                    let (allocation_id, slot) = s.vertex.alloc(call_box.len());
+                    slot.copy_from_slice(call_box);
+                    Some(allocation_id)
+                };
                 allocation_ids.push((thread_id, allocation_id));
             }
 
             let gc_events = trace.gc_events();
+            let line_count = trace.data().len();
+            let line_data = if line_count > 0 {
+                let mut line_segments = Vec::with_capacity(line_count);
+                for thread_data in trace.data() {
+                    let thread_line = thread_data.thread_line();
+                    let thread_id = thread_data.thread_id();
+                    let lane = self
+                        .data_per_thread
+                        .keys()
+                        .position(|&id| id == thread_id)
+                        .unwrap_or(0) as f32;
+                    line_segments.push(LineSegment {
+                        start_time: thread_line.start_time(),
+                        end_time: thread_line.end_time(),
+                        start_pos: [0.0, 0.0, lane + 0.5],
+                        end_pos: [0.0, 0.0, lane + 0.5],
+                        color: THREAD_LINE_COLOR,
+                        kind: LineSegment::KIND_THREAD,
+                        _padding: [0; 3],
+                    });
+                }
+                let (allocation_id, slot) = self.thread_line_vertex.alloc(line_segments.len());
+                slot.copy_from_slice(&line_segments);
+                Some(allocation_id)
+            } else {
+                None
+            };
             let gc_data = if !gc_events.is_empty() {
                 let mut gc_boxes = Vec::with_capacity(gc_events.len());
                 for &event_time in gc_events {
@@ -553,6 +762,7 @@ impl Renderer {
                 end_time,
                 max_depth,
                 thread_data: allocation_ids,
+                line_data,
                 gc_data,
             }));
             self.depth.insert(max_depth);
@@ -563,6 +773,7 @@ impl Renderer {
         {
             let Reverse(TraceBatch {
                 thread_data,
+                line_data,
                 max_depth,
                 gc_data,
                 ..
@@ -576,11 +787,14 @@ impl Renderer {
                         s_ref.used_segments -= 1;
                         if s_ref.used_segments == 0 {
                             s.remove();
-                        } else {
+                        } else if let Some(allocation_id) = allocation_id {
                             s_ref.vertex.dealloc(allocation_id);
                         }
                     }
                 }
+            }
+            if let Some(line_allocation_id) = line_data {
+                self.thread_line_vertex.dealloc(line_allocation_id);
             }
             if let Some(gc_allocation_id) = gc_data {
                 self.gc_vertex.dealloc(gc_allocation_id);
@@ -678,6 +892,22 @@ impl Renderer {
                     render_pass.draw_indexed(0..num_indices, 0, 0..len as u32);
                 });
             }
+
+            render_pass.set_pipeline(&state.line_pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[0]);
+            render_pass.set_vertex_buffer(0, self.line_vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.axis_line_buffer.slice(..));
+            render_pass.draw(0..2, 0..AXIS_LINE_INSTANCES.len() as u32);
+
+            self.thread_line_vertex.sync();
+            self.thread_line_vertex.read_buffers(|buffer, len| {
+                if len == 0 {
+                    return;
+                }
+                render_pass.set_vertex_buffer(0, self.line_vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, buffer.slice(..));
+                render_pass.draw(0..2, 0..len as u32);
+            });
 
             render_pass.set_pipeline(&state.gc_pipeline);
             render_pass.set_bind_group(0, camera_bind_group, &[0]);

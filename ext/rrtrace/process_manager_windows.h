@@ -6,6 +6,10 @@
 
 typedef HANDLE process_id;
 
+static inline process_id invalid_process_id(void) {
+    return NULL;
+}
+
 static inline process_id spawn_process(const char *cmd, char * const* argv) {
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -35,6 +39,16 @@ static inline int is_process_running(process_id pid) {
         return exitCode == STILL_ACTIVE;
     }
     return 0;
+}
+
+static inline void terminate_process(process_id pid) {
+    if (pid == NULL) return;
+    TerminateProcess(pid, 1);
+}
+
+static inline void close_process(process_id pid) {
+    if (pid == NULL) return;
+    CloseHandle(pid);
 }
 
 #endif /* PROCESS_MANAGER_WIN_H */

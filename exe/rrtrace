@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "rrtrace"
+
+if ARGV.empty?
+    $stderr.puts "Usage: rrtrace <executable.rb> [args...]"
+    exit 1
+end
+
+executable = ARGV.shift
+
+$0 = executable
+Rrtrace.start
+load executable
+Rrtrace.stop
