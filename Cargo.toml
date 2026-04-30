@@ -17,7 +17,7 @@ wgpu = "28.0.0"
 winit = "0.30.13"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.185"
+libc = "0.2.186"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { features = [
