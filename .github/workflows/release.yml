@@ -75,7 +75,7 @@ jobs:
           merge-multiple: true
 
       - name: Configure RubyGems credentials
-        uses: rubygems/configure-rubygems-credentials@v1.0.0
+        uses: rubygems/configure-rubygems-credentials@v2.0.0
 
       - name: Get version
         id: get_version
