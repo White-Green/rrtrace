@@ -16,6 +16,7 @@
 !/mise.toml
 !/Rakefile
 !/README.md
+!/renovate.json5
 !/rrtrace.gemspec
 !/taplo.toml
 

@@ -3,6 +3,9 @@ edition = "2024"
 name = "rrtrace"
 version = "0.1.0"
 
+[package.metadata.cargo-binaries]
+taplo-cli = "0.10.0"
+
 [profile.release]
 overflow-checks = true
 

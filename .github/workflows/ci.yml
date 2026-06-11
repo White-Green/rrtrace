@@ -73,9 +73,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.3
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - id: latest-taplo-version
         run: |
-          V=$(curl https://index.crates.io/ta/pl/taplo-cli | jq -r 'select(.yanked == false) | .vers' | grep --extended-regexp '^[0-9]+\.[0-9]+\.[0-9]+$' | sort --reverse --version-sort | head --lines=1)
+          V=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[0].metadata["cargo-binaries"]["taplo-cli"]')
           echo "Latest version of taplo-cli: $V"
           echo "version=$V" >> $GITHUB_OUTPUT
 
@@ -84,9 +86,6 @@ jobs:
         with:
           path: ~/.cargo/bin/taplo
           key: ${{ runner.os }}-taplo-cli-${{ steps.latest-taplo-version.outputs.version }}
-
-      - if: steps.taplo-bin-cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@stable
 
       - if: steps.taplo-bin-cache.outputs.cache-hit != 'true'
         run: cargo install taplo-cli@${{ steps.latest-taplo-version.outputs.version }} --locked
