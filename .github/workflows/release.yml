@@ -17,7 +17,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1.310.0
         with:
-          ruby-version: '4.0'
+          ruby-version: '4.0.5'
           bundler-cache: true
 
       - name: Set up Rust
@@ -65,7 +65,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1.310.0
         with:
-          ruby-version: '4.0'
+          ruby-version: '4.0.5'
           bundler-cache: true
 
       - name: Download artifacts
