@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: ["config:recommended"],
+
+  minimumReleaseAge: "3 days",
+
+  packageRules: [
+    {
+      description: "Group Cargo package patch/minor updates into one PR.",
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["patch", "minor"],
+      groupName: "Cargo package patch/minor updates",
+      groupSlug: "cargo-package-patch-minor",
+    },
+    {
+      description: "Group Ruby gem patch/minor updates into one PR.",
+      matchManagers: ["bundler"],
+      matchUpdateTypes: ["patch", "minor"],
+      groupName: "Ruby gem patch/minor updates",
+      groupSlug: "ruby-gem-patch-minor",
+    },
+    {
+      description: "Group binary version pins by binary name, without grouping different binaries together.",
+      matchDepTypes: ["binary"],
+      groupName: "{{{depName}}}",
+      groupSlug: "binary-{{{depName}}}",
+    },
+  ],
+
+  customManagers: [
+    // Cargo-installed binaries pinned in [package.metadata.cargo-binaries].
+    {
+      customType: "jsonata",
+      fileFormat: "toml",
+      managerFilePatterns: ["/^Cargo\\.toml$/"],
+      matchStrings: [
+        '$each(package.metadata."cargo-binaries", function($version, $name) { {"depName": $name, "currentValue": $version} })',
+      ],
+      datasourceTemplate: "crate",
+      versioningTemplate: "cargo",
+      depTypeTemplate: "binary",
+    },
+  ],
+}
