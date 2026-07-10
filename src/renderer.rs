@@ -1,6 +1,7 @@
 use crate::BASE_TIME;
 use crate::renderer::vertex_arena::{AllocationId, VertexArena};
 use crate::trace_state::{CallBox, SlowTrace, VISIBLE_DURATION, encode_time};
+use glam::camera::rh::{proj::directx::perspective, view::look_at_mat4};
 use glam::{Mat4, Vec3};
 use std::cmp::{Ordering, Reverse};
 use std::collections::btree_map::Entry;
@@ -815,12 +816,12 @@ impl Renderer {
         };
 
         // カメラの更新
-        let view = Mat4::look_at_rh(
+        let view = look_at_mat4(
             Vec3::new(-1.0, 1.0, 2.0), // eye
             Vec3::new(0.5, 0.5, 0.5),  // center
             Vec3::Y,                   // up
         );
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0);
+        let proj = perspective(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0);
         self.camera_uniform.view_proj = (proj * view).to_cols_array_2d();
         self.camera_uniform.base_time = encode_time(self.base_time);
         self.camera_uniform.max_depth = self.depth.max().map_or(1, |&m| m + 1);
