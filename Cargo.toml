@@ -14,7 +14,7 @@ atomic-wait = "1.1.0"
 bytemuck = { features = ["derive"], version = "1.25.0" }
 crossbeam-queue = "0.3.12"
 glam = "0.33.0"
-pollster = "0.4.0"
+pollster = "1.0.0"
 smallvec = "1.15.1"
 wgpu = "28.0.0"
 winit = "0.30.13"
