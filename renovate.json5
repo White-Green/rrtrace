@@ -5,6 +5,10 @@
 
   minimumReleaseAge: "3 days",
 
+  lockFileMaintenance: {
+    enabled: true,
+  },
+
   packageRules: [
     {
       description: "Group Cargo package patch/minor updates into one PR.",
