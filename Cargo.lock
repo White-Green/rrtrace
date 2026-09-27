@@ -529,9 +529,9 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.33.8"
+version = "0.33.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0990707078259d76f65619a692e87c82645be66cbee224173cd1af151e54ba2"
+checksum = "35accb17301a4874ea893c685ca86bc1e25f92499382adc17eec9a91f7803cfb"
 
 [[package]]
 name = "glow"
