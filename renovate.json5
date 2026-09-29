@@ -32,6 +32,11 @@
       groupName: "{{{depName}}}",
       groupSlug: "binary-{{{depName}}}",
     },
+    {
+      description: "Skip Ruby changelogs in dependency update PRs.",
+      matchDatasources: ["ruby-version"],
+      fetchChangeLogs: "off",
+    },
   ],
 
   customManagers: [
